@@ -72,7 +72,7 @@ async function getServerContext(guild) {
       await guild.members.fetch();
     }
     const members = guild.members.cache;
-    const online = members.filter((m) => !m.user.bot && m.presence?.status === "online");
+    const online = members.filter((m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline");
     const total = members.filter((m) => !m.user.bot);
     return `Contexto del servidor "${guild.name}": ${total.size} miembros en total, ${online.size} conectados ahora mismo.`;
   } catch (error) {
@@ -113,7 +113,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     const conectados = interaction.guild.members.cache.filter(
-      (m) => !m.user.bot && m.presence?.status === "online"
+    (m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline"
     );
     const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
     return interaction.editReply(`**Usuarios conectados ahora:**\n${lista}`);
