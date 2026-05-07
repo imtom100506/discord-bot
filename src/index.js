@@ -40,6 +40,9 @@ const commands = [
     .setName("ping")
     .setDescription("Verifica si TARS está activo"),
   new SlashCommandBuilder()
+    .setName("ayuda")
+    .setDescription("Muestra todos los comandos disponibles"),
+  new SlashCommandBuilder()
     .setName("resumir")
     .setDescription("TARS resume los últimos mensajes del canal")
     .addIntegerOption((option) =>
@@ -88,6 +91,19 @@ client.on("interactionCreate", async (interaction) => {
 
   if (commandName === "ping") {
     return interaction.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
+  }
+
+  if (commandName === "ayuda") {
+    return interaction.reply({
+      content:
+        "**Comandos disponibles:**\n" +
+        "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
+        "`!reset` o `/reset` — Borra tu historial\n" +
+        "`!ping` o `/ping` — Latencia\n" +
+        "`!resumir <cantidad>` o `/resumir` — Resume los últimos mensajes\n" +
+        "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol",
+      ephemeral: true,
+    });
   }
 
   if (commandName === "reset") {
@@ -167,8 +183,8 @@ client.on("messageCreate", async (message) => {
         "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
         "`!reset` o `/reset` — Borra tu historial\n" +
         "`!ping` o `/ping` — Latencia\n" +
-        "`/resumir` — Resume los últimos mensajes\n" +
-        "`/usuarios` — Ver usuarios conectados o por rol"
+        "`!resumir <cantidad>` o `/resumir` — Resume los últimos mensajes\n" +
+        "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol"
     );
   }
 
