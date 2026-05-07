@@ -199,6 +199,51 @@ client.on("messageCreate", async (message) => {
       message.reply("Hubo un error. Intenta de nuevo.");
     }
   }
+  if (content.startsWith(`${PREFIX}resumir`)) {
+    const cantidad = Math.min(parseInt(content.split(" ")[1]) || 20, 50);
+    await message.channel.sendTyping();
+    const mensajes = await message.channel.messages.fetch({ limit: cantidad });
+    const historial = mensajes
+      .reverse()
+      .filter((m) => !m.author.bot)
+      .map((m) => `${m.author.username}: ${m.content}`)
+      .join("\n");
+
+    if (!historial) return message.reply("No hay mensajes para resumir.");
+
+    try {
+      const resumen = await askAI(
+        message.author.id,
+        `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
+      );
+      message.reply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
+    } catch (error) {
+      message.reply("Error al resumir. Intenta de nuevo.");
+    }
+  }
+
+  if (content.startsWith(`${PREFIX}usuarios`)) {
+    const args = content.split(" ");
+    const rolNombre = args.slice(1).join(" ");
+
+    await message.guild.members.fetch();
+
+    if (rolNombre) {
+      const rol = message.guild.roles.cache.find(
+        (r) => r.name.toLowerCase() === rolNombre.toLowerCase()
+      );
+      if (!rol) return message.reply(`No encontré el rol "${rolNombre}".`);
+      const miembros = rol.members.filter((m) => !m.user.bot);
+      const lista = miembros.map((m) => `- ${m.user.username}`).join("\n") || "Ninguno";
+      return message.reply(`**Usuarios con el rol "${rol.name}":**\n${lista}`);
+    }
+
+    const conectados = message.guild.members.cache.filter(
+      (m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline"
+    );
+    const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
+    return message.reply(`**Usuarios conectados ahora:**\n${lista}`);
+  }
 });
 
 client.login(process.env.DISCORD_TOKEN).catch((err) => {
