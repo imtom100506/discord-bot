@@ -67,11 +67,17 @@ client.once("ready", async () => {
 
 // Función para obtener contexto del servidor
 async function getServerContext(guild) {
-  await guild.members.fetch();
-  const members = guild.members.cache;
-  const online = members.filter((m) => !m.user.bot && m.presence?.status === "online");
-  const total = members.filter((m) => !m.user.bot);
-  return `Contexto del servidor "${guild.name}": ${total.size} miembros en total, ${online.size} conectados ahora mismo.`;
+  try {
+    if (guild.members.cache.size < 2) {
+      await guild.members.fetch();
+    }
+    const members = guild.members.cache;
+    const online = members.filter((m) => !m.user.bot && m.presence?.status === "online");
+    const total = members.filter((m) => !m.user.bot);
+    return `Contexto del servidor "${guild.name}": ${total.size} miembros en total, ${online.size} conectados ahora mismo.`;
+  } catch (error) {
+    return `Contexto del servidor "${guild.name}".`;
+  }
 }
 
 // ── Slash commands ────────────────────────────────────
@@ -91,7 +97,9 @@ client.on("interactionCreate", async (interaction) => {
 
   if (commandName === "usuarios") {
     await interaction.deferReply();
+    if (interaction.guild.members.cache.size < 2) {
     await interaction.guild.members.fetch();
+    }
     const rolNombre = interaction.options.getString("rol");
 
     if (rolNombre) {
