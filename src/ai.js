@@ -7,7 +7,7 @@ const conversationHistory = new Map();
 
 async function askAI(userId, userMessage) {
   const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash", // Gratis ✅
+    model: "gemini-2.0-flash", // Gratis ✅
     systemInstruction:
       "Eres un asistente amigable en un servidor de Discord. " +
       "Responde de forma concisa, útil y con buen humor. " +
