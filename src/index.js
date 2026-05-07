@@ -1,12 +1,5 @@
 require("dotenv").config();
-const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-} = require("discord.js");
+const { Client, GatewayIntentBits, Partials } = require("discord.js");
 const { askAI, clearHistory } = require("./ai");
 const keepAlive = require("./keepAlive");
 
@@ -22,70 +15,54 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// Registrar slash commands
-const commands = [
-new SlashCommandBuilder()
-    .setName("tars")
-    .setDescription("Habla con TARS")
-    .addStringOption((option) =>
-      option
-        .setName("mensaje")
-        .setDescription("Tu mensaje para TARS")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("reset")
-    .setDescription("Borra tu historial de conversación con TARS"),
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Verifica si TARS está activo"),
-].map((command) => command.toJSON());
+const PREFIX = "!";
 
-const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-
-client.once("ready", async () => {
+client.once("ready", () => {
   console.log(`✅ Bot conectado como: ${client.user.tag}`);
-
-  try {
-    await rest.put(Routes.applicationCommands(client.user.id), {
-      body: commands,
-    });
-    console.log("✅ Slash commands registrados correctamente");
-  } catch (error) {
-    console.error("Error registrando comandos:", error);
-  }
 });
 
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
 
-  const { commandName } = interaction;
+  const content = message.content.trim();
 
-  if (commandName === "ping") {
-    return interaction.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
+  if (content === `${PREFIX}ayuda`) {
+    return message.reply(
+      "**Comandos disponibles:**\n" +
+        "`!tars <mensaje>` — Habla con TARS\n" +
+        "`!reset` — Borra tu historial de conversación\n" +
+        "`!ping` — Verifica si TARS está activo"
+    );
   }
 
-  if (commandName === "reset") {
-    clearHistory(interaction.user.id);
-    return interaction.reply({
-      content: "Historial borrado. Empezamos de cero.",
-      ephemeral: true,
-    });
+  if (content === `${PREFIX}ping`) {
+    return message.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
   }
 
-  if (commandName === "tars") {
-    const userMessage = interaction.options.getString("mensaje");
+  if (content === `${PREFIX}reset`) {
+    clearHistory(message.author.id);
+    return message.reply("Historial borrado. Empezamos de cero.");
+  }
 
-    await interaction.deferReply();
-
+  if (content.startsWith(`${PREFIX}tars`)) {
+    const userMessage = content.slice(`${PREFIX}tars`.length).trim();
+    if (!userMessage) {
+      return message.reply("Escribe algo después de `!tars`");
+    }
+    await message.channel.sendTyping();
     try {
-      const response = await askAI(interaction.user.id, userMessage);
-      await interaction.editReply(response);
+      const response = await askAI(message.author.id, userMessage);
+      if (response.length > 1900) {
+        const chunks = response.match(/.{1,1900}/gs);
+        for (const chunk of chunks) {
+          await message.reply(chunk);
+        }
+      } else {
+        await message.reply(response);
+      }
     } catch (error) {
       console.error("Error con la IA:", error);
-      await interaction.editReply(
-        "Hubo un error al contactar la IA. Intenta de nuevo."
-      );
+      message.reply("Hubo un error. Intenta de nuevo.");
     }
   }
 });
