@@ -22,6 +22,12 @@ const client = new Client({
     GatewayIntentBits.GuildPresences,
   ],
   partials: [Partials.Channel],
+  ws: {
+    large_threshold: 50,
+  },
+  rest: {
+    timeout: 60000,
+  },
 });
 
 const PREFIX = "!";
