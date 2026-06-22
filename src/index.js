@@ -262,6 +262,7 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+console.log("Token cargado:", process.env.DISCORD_TOKEN ? "SI" : "NO");
 client.login(process.env.DISCORD_TOKEN).catch((err) => {
   console.error("Error al conectar con Discord:", err.message);
 });
