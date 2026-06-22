@@ -268,4 +268,9 @@ client.login(process.env.DISCORD_TOKEN).then(() => {
   console.log("Login exitoso");
 }).catch((err) => {
   console.error("Error al conectar con Discord:", err.message);
+  process.exit(1);
 });
+
+setTimeout(() => {
+  console.log("Estado del cliente:", client.ws.status);
+}, 10000);
