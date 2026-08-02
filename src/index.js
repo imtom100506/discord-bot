@@ -1,4 +1,21 @@
 require("dotenv").config();
+// Memoria de contexto por canal (últimos 50 mensajes)
+const channelContext = new Map();
+
+function addToChannelContext(channelId, username, content) {
+  if (!channelContext.has(channelId)) {
+    channelContext.set(channelId, []);
+  }
+  const context = channelContext.get(channelId);
+  context.push(`${username}: ${content}`);
+  if (context.length > 50) context.shift();
+}
+
+function getChannelContext(channelId) {
+  const context = channelContext.get(channelId);
+  if (!context || context.length === 0) return "";
+  return "Contexto reciente del canal:\n" + context.join("\n") + "\n\n";
+}
 const {
   Client,
   GatewayIntentBits,
@@ -167,9 +184,46 @@ client.on("interactionCreate", async (interaction) => {
   if (commandName === "tars") {
     const userMessage = interaction.options.getString("mensaje");
     await interaction.deferReply();
+
+    // Detectar si quiere kickear a alguien de voz
+    const kickMatch = userMessage.match(/kick|expulsa|saca|bota|desconecta/i);
+    if (kickMatch) {
+      const rolesAutorizados = ["Líder Supremo", "Sigma"];
+      const tienePermiso = interaction.member.roles.cache.some((r) =>
+        rolesAutorizados.includes(r.name)
+      );
+
+      if (!tienePermiso) {
+        return interaction.editReply("Negativo. No tienes rango suficiente para ordenarme eso.");
+      }
+
+      const target = interaction.options.resolved?.members?.first() ||
+        interaction.guild.members.cache.find((m) =>
+          userMessage.toLowerCase().includes(m.user.username.toLowerCase())
+        );
+
+      if (!target) {
+        return interaction.editReply("Necesito que menciones al usuario. Ej: `/tars saca a @usuario del canal de voz`");
+      }
+
+      if (!target.voice.channel) {
+        return interaction.editReply(`${target.user.username} no está en ningún canal de voz. Misión cancelada.`);
+      }
+
+      try {
+        await target.voice.disconnect();
+        return interaction.editReply(`Ejecutando comando. ${target.user.username} ha sido expulsado del canal de voz. Misión completada.`);
+      } catch (error) {
+        console.error("Error al kickear:", error);
+        return interaction.editReply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
+      }
+    }
+
+    // Respuesta normal de IA
     try {
       const serverCtx = await getServerContext(interaction.guild);
-      const response = await askAI(interaction.user.id, `${serverCtx}\n\nPregunta: ${userMessage}`);
+      const channelCtx = getChannelContext(interaction.channelId);
+      const response = await askAI(interaction.user.id, `${serverCtx}\n\n${channelCtx}Pregunta: ${userMessage}`);
       await interaction.editReply(response);
     } catch (error) {
       console.error("Error con la IA:", error);
@@ -181,6 +235,10 @@ client.on("interactionCreate", async (interaction) => {
 // ── Prefix commands ───────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+
+  // Guardar mensaje en contexto del canal silenciosamente
+  addToChannelContext(message.channel.id, message.author.username, message.content);
+
   const content = message.content.trim();
 
   if (content === `${PREFIX}ayuda`) {
@@ -203,13 +261,48 @@ client.on("messageCreate", async (message) => {
     return message.reply("Historial borrado. Empezamos de cero.");
   }
 
-  if (content.startsWith(`${PREFIX}tars`)) {
+if (content.startsWith(`${PREFIX}tars`)) {
     const userMessage = content.slice(`${PREFIX}tars`.length).trim();
     if (!userMessage) return message.reply("Escribe algo después de `!tars`");
+
     await message.channel.sendTyping();
+
+    // Detectar si quiere kickear a alguien de voz
+    const kickMatch = userMessage.match(/kick|expulsa|saca|bota|desconecta/i);
+    if (kickMatch) {
+      const rolesAutorizados = ["Líder Supremo", "Sigma"];
+      const tienePermiso = message.member.roles.cache.some((r) =>
+        rolesAutorizados.includes(r.name)
+      );
+
+      if (!tienePermiso) {
+        return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
+      }
+
+      const target = message.mentions.members.first();
+
+      if (!target) {
+        return message.reply("Procesando... necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
+      }
+
+      if (!target.voice.channel) {
+        return message.reply(`${target.user.username} no está en ningún canal de voz. Misión cancelada.`);
+      }
+
+      try {
+        await target.voice.disconnect();
+        return message.reply(`Ejecutando comando. ${target.user.username} ha sido expulsado del canal de voz. Misión completada.`);
+      } catch (error) {
+        console.error("Error al kickear:", error);
+        return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
+      }
+    }
+
+    // Respuesta normal de IA
     try {
       const serverCtx = await getServerContext(message.guild);
-      const response = await askAI(message.author.id, `${serverCtx}\n\nPregunta: ${userMessage}`);
+      const channelCtx = getChannelContext(message.channel.id);
+      const response = await askAI(message.author.id, `${serverCtx}\n\n${channelCtx}Pregunta: ${userMessage}`);
       if (response.length > 1900) {
         const chunks = response.match(/.{1,1900}/gs);
         for (const chunk of chunks) await message.reply(chunk);
