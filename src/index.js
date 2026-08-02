@@ -1,9 +1,10 @@
 require("dotenv").config();
 require("opusscript");
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require("@discordjs/voice");
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require("@discordjs/voice");
 const gTTS = require("gtts");
 const fs = require("fs");
 const path = require("path");
+const ffmpeg = require("ffmpeg-static");
 // Memoria de contexto por canal (últimos 50 mensajes)
 const channelContext = new Map();
 
