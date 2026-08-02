@@ -1,4 +1,8 @@
 require("dotenv").config();
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require("@discordjs/voice");
+const gTTS = require("gtts");
+const fs = require("fs");
+const path = require("path");
 // Memoria de contexto por canal (últimos 50 mensajes)
 const channelContext = new Map();
 
@@ -218,7 +222,35 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
       }
     }
+// Detectar si pide resumir
+    const resumirMatch = userMessage.match(/resum[ei]/i);
+    if (resumirMatch) {
+      const numMatch = userMessage.match(/\d+/);
+      const cantidad = numMatch ? parseInt(numMatch[0]) : 20;
 
+      if (cantidad > 50) {
+        return interaction.editReply(`Error. El máximo permitido es 50 mensajes. Intenta de nuevo con un número menor.`);
+      }
+
+      const mensajes = await interaction.channel.messages.fetch({ limit: cantidad });
+      const historial = mensajes
+        .reverse()
+        .filter((m) => !m.author.bot)
+        .map((m) => `${m.author.username}: ${m.content}`)
+        .join("\n");
+
+      if (!historial) return interaction.editReply("No hay mensajes para resumir.");
+
+      try {
+        const resumen = await askAI(
+          interaction.user.id,
+          `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
+        );
+        return interaction.editReply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
+      } catch (error) {
+        return interaction.editReply("Error al resumir. Intenta de nuevo.");
+      }
+    }
     // Respuesta normal de IA
     try {
       const serverCtx = await getServerContext(interaction.guild);
@@ -297,7 +329,36 @@ if (content.startsWith(`${PREFIX}tars`)) {
         return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
       }
     }
+// Detectar si pide resumir
+    const resumirMatch = userMessage.match(/resum[ei]/i);
+    if (resumirMatch) {
+      const numMatch = userMessage.match(/\d+/);
+      const cantidad = numMatch ? parseInt(numMatch[0]) : 20;
 
+      if (cantidad > 50) {
+        return message.reply(`Error. El máximo permitido es 50 mensajes. Intenta de nuevo con un número menor.`);
+      }
+
+      await message.channel.sendTyping();
+      const mensajes = await message.channel.messages.fetch({ limit: cantidad });
+      const historial = mensajes
+        .reverse()
+        .filter((m) => !m.author.bot)
+        .map((m) => `${m.author.username}: ${m.content}`)
+        .join("\n");
+
+      if (!historial) return message.reply("No hay mensajes para resumir.");
+
+      try {
+        const resumen = await askAI(
+          message.author.id,
+          `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
+        );
+        return message.reply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
+      } catch (error) {
+        return message.reply("Error al resumir. Intenta de nuevo.");
+      }
+    }
     // Respuesta normal de IA
     try {
       const serverCtx = await getServerContext(message.guild);
