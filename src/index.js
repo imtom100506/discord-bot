@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("opusscript");
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require("@discordjs/voice");
 const gTTS = require("gtts");
 const fs = require("fs");
@@ -141,7 +142,7 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
   }
-  
+
 if (commandName === "tts") {
     const texto = interaction.options.getString("texto");
     const voiceChannel = interaction.member.voice.channel;
