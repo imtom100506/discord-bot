@@ -519,6 +519,31 @@ if (content.startsWith(`${PREFIX}tts`)) {
       const tts = new gTTS(texto, "es");
 
       tts.save(audioPath, (err) => {
+        tts.save(audioPath, (err) => {
+  if (err) {
+    console.error("Error TTS:", err);
+    return message.reply("Error al generar el audio.");
+  }
+
+  console.log("Audio generado en:", audioPath);
+  console.log("Archivo existe:", fs.existsSync(audioPath));
+
+  const player = createAudioPlayer();
+  const resource = createAudioResource(audioPath);
+
+  console.log("Player creado, reproduciendo...");
+  connection.subscribe(player);
+  player.play(resource);
+
+  player.on(AudioPlayerStatus.Idle, () => {
+    console.log("Audio terminado");
+    try { fs.unlinkSync(audioPath); } catch (e) {}
+  });
+
+  player.on("error", (error) => {
+    console.error("Error reproduciendo audio:", error.message);
+  });
+});
         if (err) {
           console.error("Error TTS:", err);
           return message.reply("Error al generar el audio.");
