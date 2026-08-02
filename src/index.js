@@ -149,33 +149,40 @@ if (commandName === "tts") {
     const voiceChannel = interaction.member.voice.channel;
 
     if (!voiceChannel) {
-      return interaction.reply({ content: "Debes estar en un canal de voz.", ephemeral: true });
+      return interaction.reply({ content: "Debes estar en un canal de voz.", flags: 64 });
     }
 
-    await interaction.reply({ content: "🔊 Reproduciéndolo...", ephemeral: true });
+    await interaction.reply({ content: `Reproduciendo: "${texto}"`, flags: 64 });
 
     try {
       const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: interaction.guild.id,
         adapterCreator: interaction.guild.voiceAdapterCreator,
+        selfDeaf: false,
       });
 
-      const audioPath = path.join(__dirname, "tts_temp.mp3");
+      const audioPath = path.join(__dirname, `tts_${Date.now()}.mp3`);
       const tts = new gTTS(texto, "es");
 
-      tts.save(audioPath, async (err) => {
+      tts.save(audioPath, (err) => {
         if (err) return console.error("Error TTS:", err);
 
         const player = createAudioPlayer();
         const resource = createAudioResource(audioPath);
+
         connection.subscribe(player);
         player.play(resource);
 
         player.on(AudioPlayerStatus.Idle, () => {
-          fs.unlinkSync(audioPath);
+          try { fs.unlinkSync(audioPath); } catch (e) {}
+        });
+
+        player.on("error", (error) => {
+          console.error("Error reproduciendo audio:", error.message);
         });
       });
+
     } catch (error) {
       console.error("Error en TTS:", error);
     }
@@ -481,9 +488,9 @@ if (content.startsWith(`${PREFIX}tars`)) {
 if (content.startsWith(`${PREFIX}tts`)) {
     const texto = content.slice(`${PREFIX}tts`.length).trim();
 
-    // Salir del canal de voz
     if (texto.toLowerCase() === "salir") {
-      const connection = require("@discordjs/voice").getVoiceConnection(message.guild.id);
+      const { getVoiceConnection } = require("@discordjs/voice");
+      const connection = getVoiceConnection(message.guild.id);
       if (connection) {
         connection.destroy();
         return message.reply("Desconectado del canal de voz.");
@@ -495,46 +502,45 @@ if (content.startsWith(`${PREFIX}tts`)) {
       return message.reply("Escribe algo después de `!tts`. Ej: `!tts hola a todos`");
     }
 
-    // Verificar que el usuario esté en un canal de voz
     const voiceChannel = message.member.voice.channel;
     if (!voiceChannel) {
       return message.reply("Debes estar en un canal de voz para usar este comando.");
     }
 
     try {
-      // Unirse al canal de voz
       const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: message.guild.id,
         adapterCreator: message.guild.voiceAdapterCreator,
+        selfDeaf: false,
       });
 
-      // Generar audio TTS
-      const audioPath = path.join(__dirname, "tts_temp.mp3");
+      const audioPath = path.join(__dirname, `tts_${Date.now()}.mp3`);
       const tts = new gTTS(texto, "es");
 
-      tts.save(audioPath, async (err) => {
+      tts.save(audioPath, (err) => {
         if (err) {
           console.error("Error TTS:", err);
           return message.reply("Error al generar el audio.");
         }
 
-        // Reproducir audio
         const player = createAudioPlayer();
         const resource = createAudioResource(audioPath);
+
         connection.subscribe(player);
         player.play(resource);
 
+        message.reply(`Reproduciendo: "${texto}"`);
+
         player.on(AudioPlayerStatus.Idle, () => {
-          fs.unlinkSync(audioPath); // Borrar archivo temporal
+          try { fs.unlinkSync(audioPath); } catch (e) {}
         });
 
         player.on("error", (error) => {
-          console.error("Error reproduciendo audio:", error);
+          console.error("Error reproduciendo audio:", error.message);
         });
       });
 
-      message.react("🔊");
     } catch (error) {
       console.error("Error en TTS:", error);
       message.reply("Error al unirme al canal de voz.");
