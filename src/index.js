@@ -35,6 +35,23 @@ const keepAlive = require("./keepAlive");
 
 keepAlive();
 
+// ── Memoria de contexto por canal (últimos 50 mensajes) ──
+const channelContext = new Map();
+
+function addToChannelContext(channelId, username, content) {
+  if (!channelContext.has(channelId)) channelContext.set(channelId, []);
+  const ctx = channelContext.get(channelId);
+  ctx.push(`${username}: ${content}`);
+  if (ctx.length > 50) ctx.shift();
+}
+
+function getChannelContext(channelId) {
+  const ctx = channelContext.get(channelId);
+  if (!ctx || ctx.length === 0) return "";
+  return "Contexto reciente del canal:\n" + ctx.join("\n") + "\n\n";
+}
+
+// ── Cliente ──────────────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -45,22 +62,20 @@ const client = new Client({
     GatewayIntentBits.GuildPresences,
   ],
   partials: [Partials.Channel],
-  ws: {
-    large_threshold: 50,
-  },
-  rest: {
-    timeout: 60000,
-  },
+  ws: { large_threshold: 50 },
+  rest: { timeout: 60000 },
 });
 
 const PREFIX = "!";
+const ROLES_AUTORIZADOS = ["Líder Supremo", "Sigma"];
 
+// ── Slash commands ───────────────────────────────────────
 const commands = [
   new SlashCommandBuilder()
     .setName("tars")
     .setDescription("Habla con TARS")
-    .addStringOption((option) =>
-      option.setName("mensaje").setDescription("Tu mensaje para TARS").setRequired(true)
+    .addStringOption((o) =>
+      o.setName("mensaje").setDescription("Tu mensaje para TARS").setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("reset")
@@ -83,19 +98,20 @@ new SlashCommandBuilder()
   new SlashCommandBuilder()
     .setName("resumir")
     .setDescription("TARS resume los últimos mensajes del canal")
-    .addIntegerOption((option) =>
-      option.setName("cantidad").setDescription("Cuántos mensajes resumir (máx. 50)").setRequired(false)
+    .addIntegerOption((o) =>
+      o.setName("cantidad").setDescription("Cuántos mensajes resumir (máx. 50)").setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("usuarios")
     .setDescription("Lista usuarios conectados o con un rol específico")
-    .addStringOption((option) =>
-      option.setName("rol").setDescription("Nombre del rol a filtrar (opcional)").setRequired(false)
+    .addStringOption((o) =>
+      o.setName("rol").setDescription("Nombre del rol a filtrar (opcional)").setRequired(false)
     ),
-].map((command) => command.toJSON());
+].map((c) => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
+// ── Ready ────────────────────────────────────────────────
 client.once("ready", async () => {
   console.log(`✅ Bot conectado como: ${client.user.tag}`);
   try {
@@ -106,24 +122,44 @@ client.once("ready", async () => {
   }
 });
 
-// Función para obtener contexto del servidor
+// ── Helpers ──────────────────────────────────────────────
 async function getServerContext(guild) {
   try {
-    if (guild.members.cache.size < 2) {
-      await guild.members.fetch();
-    }
+    if (guild.members.cache.size < 2) await guild.members.fetch();
     const members = guild.members.cache;
     const online = members.filter((m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline");
     const total = members.filter((m) => !m.user.bot);
     return `Contexto del servidor "${guild.name}": ${total.size} miembros en total, ${online.size} conectados ahora mismo.`;
-  } catch (error) {
+  } catch {
     return `Contexto del servidor "${guild.name}".`;
   }
 }
 
-// ── Slash commands ────────────────────────────────────
+async function resumirMensajes(channel, cantidad, userId) {
+  const mensajes = await channel.messages.fetch({ limit: cantidad });
+  const historial = mensajes
+    .reverse()
+    .filter((m) => !m.author.bot)
+    .map((m) => `${m.author.username}: ${m.content}`)
+    .join("\n");
+  if (!historial) return null;
+  return await askAI(userId, `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`);
+}
+
+function tienePermiso(member) {
+  return member.roles.cache.some((r) => ROLES_AUTORIZADOS.includes(r.name));
+}
+
+// ── Manejo de errores global ─────────────────────────────
+process.on("unhandledRejection", (error) => {
+  if (error?.code === 10062) return;
+  console.error("Error no manejado:", error);
+});
+
+// ── Slash commands handler ───────────────────────────────
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+  if (!interaction.isRepliable()) return;
 
   const { commandName } = interaction;
 
@@ -140,7 +176,7 @@ client.on("interactionCreate", async (interaction) => {
         "`!ping` o `/ping` — Latencia\n" +
         "`!resumir <cantidad>` o `/resumir` — Resume los últimos mensajes\n" +
         "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol",
-      ephemeral: true,
+      flags: 64,
     });
   }
 
@@ -199,20 +235,16 @@ if (commandName === "tts") {
 
   if (commandName === "reset") {
     clearHistory(interaction.user.id);
-    return interaction.reply({ content: "Historial borrado. Empezamos de cero.", ephemeral: true });
+    return interaction.reply({ content: "Historial borrado. Empezamos de cero.", flags: 64 });
   }
 
   if (commandName === "usuarios") {
     await interaction.deferReply();
-    if (interaction.guild.members.cache.size < 2) {
-    await interaction.guild.members.fetch();
-    }
+    if (interaction.guild.members.cache.size < 2) await interaction.guild.members.fetch();
     const rolNombre = interaction.options.getString("rol");
 
     if (rolNombre) {
-      const rol = interaction.guild.roles.cache.find(
-        (r) => r.name.toLowerCase() === rolNombre.toLowerCase()
-      );
+      const rol = interaction.guild.roles.cache.find((r) => r.name.toLowerCase() === rolNombre.toLowerCase());
       if (!rol) return interaction.editReply(`No encontré el rol "${rolNombre}".`);
       const miembros = rol.members.filter((m) => !m.user.bot);
       const lista = miembros.map((m) => `- ${m.user.username}`).join("\n") || "Ninguno";
@@ -220,7 +252,7 @@ if (commandName === "tts") {
     }
 
     const conectados = interaction.guild.members.cache.filter(
-    (m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline"
+      (m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline"
     );
     const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
     return interaction.editReply(`**Usuarios conectados ahora:**\n${lista}`);
@@ -229,22 +261,11 @@ if (commandName === "tts") {
   if (commandName === "resumir") {
     await interaction.deferReply();
     const cantidad = Math.min(interaction.options.getInteger("cantidad") || 20, 50);
-    const mensajes = await interaction.channel.messages.fetch({ limit: cantidad });
-    const historial = mensajes
-      .reverse()
-      .filter((m) => !m.author.bot)
-      .map((m) => `${m.author.username}: ${m.content}`)
-      .join("\n");
-
-    if (!historial) return interaction.editReply("No hay mensajes para resumir.");
-
     try {
-      const resumen = await askAI(
-        interaction.user.id,
-        `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
-      );
+      const resumen = await resumirMensajes(interaction.channel, cantidad, interaction.user.id);
+      if (!resumen) return interaction.editReply("No hay mensajes para resumir.");
       await interaction.editReply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-    } catch (error) {
+    } catch {
       await interaction.editReply("Error al resumir. Intenta de nuevo.");
     }
   }
@@ -252,70 +273,6 @@ if (commandName === "tts") {
   if (commandName === "tars") {
     const userMessage = interaction.options.getString("mensaje");
     await interaction.deferReply();
-
-    // Detectar si quiere kickear a alguien de voz
-    const kickMatch = userMessage.match(/kick|expulsa|saca|bota|desconecta/i);
-    if (kickMatch) {
-      const rolesAutorizados = ["Líder Supremo", "Sigma"];
-      const tienePermiso = interaction.member.roles.cache.some((r) =>
-        rolesAutorizados.includes(r.name)
-      );
-
-      if (!tienePermiso) {
-        return interaction.editReply("Negativo. No tienes rango suficiente para ordenarme eso.");
-      }
-
-      const target = interaction.options.resolved?.members?.first() ||
-        interaction.guild.members.cache.find((m) =>
-          userMessage.toLowerCase().includes(m.user.username.toLowerCase())
-        );
-
-      if (!target) {
-        return interaction.editReply("Necesito que menciones al usuario. Ej: `/tars saca a @usuario del canal de voz`");
-      }
-
-      if (!target.voice.channel) {
-        return interaction.editReply(`${target.user.username} no está en ningún canal de voz. Misión cancelada.`);
-      }
-
-      try {
-        await target.voice.disconnect();
-        return interaction.editReply(`Ejecutando comando. ${target.user.username} ha sido expulsado del canal de voz. Misión completada.`);
-      } catch (error) {
-        console.error("Error al kickear:", error);
-        return interaction.editReply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
-      }
-    }
-// Detectar si pide resumir
-    const resumirMatch = userMessage.match(/resum[ei]/i);
-    if (resumirMatch) {
-      const numMatch = userMessage.match(/\d+/);
-      const cantidad = numMatch ? parseInt(numMatch[0]) : 20;
-
-      if (cantidad > 50) {
-        return interaction.editReply(`Error. El máximo permitido es 50 mensajes. Intenta de nuevo con un número menor.`);
-      }
-
-      const mensajes = await interaction.channel.messages.fetch({ limit: cantidad });
-      const historial = mensajes
-        .reverse()
-        .filter((m) => !m.author.bot)
-        .map((m) => `${m.author.username}: ${m.content}`)
-        .join("\n");
-
-      if (!historial) return interaction.editReply("No hay mensajes para resumir.");
-
-      try {
-        const resumen = await askAI(
-          interaction.user.id,
-          `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
-        );
-        return interaction.editReply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-      } catch (error) {
-        return interaction.editReply("Error al resumir. Intenta de nuevo.");
-      }
-    }
-    // Respuesta normal de IA
     try {
       const serverCtx = await getServerContext(interaction.guild);
       const channelCtx = getChannelContext(interaction.channelId);
@@ -328,13 +285,9 @@ if (commandName === "tts") {
   }
 });
 
-// ── Prefix commands ───────────────────────────────────
+// ── Prefix commands handler ──────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-
-  // Guardar mensaje en contexto del canal silenciosamente
-  addToChannelContext(message.channel.id, message.author.username, message.content);
-
   const content = message.content.trim();
 
   if (content === `${PREFIX}ayuda`) {
@@ -362,68 +315,6 @@ if (content.startsWith(`${PREFIX}tars`)) {
     if (!userMessage) return message.reply("Escribe algo después de `!tars`");
 
     await message.channel.sendTyping();
-
-    // Detectar si quiere kickear a alguien de voz
-    const kickMatch = userMessage.match(/kick|expulsa|saca|bota|desconecta/i);
-    if (kickMatch) {
-      const rolesAutorizados = ["Líder Supremo", "Sigma"];
-      const tienePermiso = message.member.roles.cache.some((r) =>
-        rolesAutorizados.includes(r.name)
-      );
-
-      if (!tienePermiso) {
-        return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
-      }
-
-      const target = message.mentions.members.first();
-
-      if (!target) {
-        return message.reply("Procesando... necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
-      }
-
-      if (!target.voice.channel) {
-        return message.reply(`${target.user.username} no está en ningún canal de voz. Misión cancelada.`);
-      }
-
-      try {
-        await target.voice.disconnect();
-        return message.reply(`Ejecutando comando. ${target.user.username} ha sido expulsado del canal de voz. Misión completada.`);
-      } catch (error) {
-        console.error("Error al kickear:", error);
-        return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
-      }
-    }
-// Detectar si pide resumir
-    const resumirMatch = userMessage.match(/resum[ei]/i);
-    if (resumirMatch) {
-      const numMatch = userMessage.match(/\d+/);
-      const cantidad = numMatch ? parseInt(numMatch[0]) : 20;
-
-      if (cantidad > 50) {
-        return message.reply(`Error. El máximo permitido es 50 mensajes. Intenta de nuevo con un número menor.`);
-      }
-
-      await message.channel.sendTyping();
-      const mensajes = await message.channel.messages.fetch({ limit: cantidad });
-      const historial = mensajes
-        .reverse()
-        .filter((m) => !m.author.bot)
-        .map((m) => `${m.author.username}: ${m.content}`)
-        .join("\n");
-
-      if (!historial) return message.reply("No hay mensajes para resumir.");
-
-      try {
-        const resumen = await askAI(
-          message.author.id,
-          `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
-        );
-        return message.reply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-      } catch (error) {
-        return message.reply("Error al resumir. Intenta de nuevo.");
-      }
-    }
-    // Respuesta normal de IA
     try {
       const serverCtx = await getServerContext(message.guild);
       const channelCtx = getChannelContext(message.channel.id);
@@ -439,39 +330,26 @@ if (content.startsWith(`${PREFIX}tars`)) {
       message.reply("Hubo un error. Intenta de nuevo.");
     }
   }
+
   if (content.startsWith(`${PREFIX}resumir`)) {
-    const cantidad = Math.min(parseInt(content.split(" ")[1]) || 20, 50);
+    const numMatch = content.match(/\d+/);
+    const cantidad = Math.min(numMatch ? parseInt(numMatch[0]) : 20, 50);
     await message.channel.sendTyping();
-    const mensajes = await message.channel.messages.fetch({ limit: cantidad });
-    const historial = mensajes
-      .reverse()
-      .filter((m) => !m.author.bot)
-      .map((m) => `${m.author.username}: ${m.content}`)
-      .join("\n");
-
-    if (!historial) return message.reply("No hay mensajes para resumir.");
-
     try {
-      const resumen = await askAI(
-        message.author.id,
-        `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`
-      );
+      const resumen = await resumirMensajes(message.channel, cantidad, message.author.id);
+      if (!resumen) return message.reply("No hay mensajes para resumir.");
       message.reply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-    } catch (error) {
+    } catch {
       message.reply("Error al resumir. Intenta de nuevo.");
     }
   }
 
   if (content.startsWith(`${PREFIX}usuarios`)) {
-    const args = content.split(" ");
-    const rolNombre = args.slice(1).join(" ");
-
-    await message.guild.members.fetch();
+    const rolNombre = content.slice(`${PREFIX}usuarios`.length).trim();
+    if (message.guild.members.cache.size < 2) await message.guild.members.fetch();
 
     if (rolNombre) {
-      const rol = message.guild.roles.cache.find(
-        (r) => r.name.toLowerCase() === rolNombre.toLowerCase()
-      );
+      const rol = message.guild.roles.cache.find((r) => r.name.toLowerCase() === rolNombre.toLowerCase());
       if (!rol) return message.reply(`No encontré el rol "${rolNombre}".`);
       const miembros = rol.members.filter((m) => !m.user.bot);
       const lista = miembros.map((m) => `- ${m.user.username}`).join("\n") || "Ninguno";
@@ -573,15 +451,8 @@ if (content.startsWith(`${PREFIX}tts`)) {
   }
 });
 
-console.log("Token cargado:", process.env.DISCORD_TOKEN ? "SI" : "NO");
-console.log("Intentando conectar a Discord...");
-client.login(process.env.DISCORD_TOKEN).then(() => {
-  console.log("Login exitoso");
-}).catch((err) => {
+// ── Login ────────────────────────────────────────────────
+client.login(process.env.DISCORD_TOKEN).catch((err) => {
   console.error("Error al conectar con Discord:", err.message);
   process.exit(1);
 });
-
-setTimeout(() => {
-  console.log("Estado del cliente:", client.ws.status);
-}, 10000);
