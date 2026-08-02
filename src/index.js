@@ -36,7 +36,6 @@ const keepAlive = require("./keepAlive");
 keepAlive();
 
 // ── Memoria de contexto por canal (últimos 50 mensajes) ──
-const channelContext = new Map();
 
 function addToChannelContext(channelId, username, content) {
   if (!channelContext.has(channelId)) channelContext.set(channelId, []);
