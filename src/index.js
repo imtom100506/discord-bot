@@ -1,5 +1,5 @@
 require("dotenv").config();
-require("opusscript");
+require("mediaplex");
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require("@discordjs/voice");
 const gTTS = require("gtts");
 const fs = require("fs");
