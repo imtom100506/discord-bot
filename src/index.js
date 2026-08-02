@@ -69,6 +69,15 @@ const commands = [
   new SlashCommandBuilder()
     .setName("ayuda")
     .setDescription("Muestra todos los comandos disponibles"),
+new SlashCommandBuilder()
+    .setName("tts")
+    .setDescription("TARS habla en el canal de voz")
+    .addStringOption((option) =>
+      option.setName("texto").setDescription("Texto que quieres que TARS diga").setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("tts-salir")
+    .setDescription("TARS sale del canal de voz"),
   new SlashCommandBuilder()
     .setName("resumir")
     .setDescription("TARS resume los últimos mensajes del canal")
@@ -131,6 +140,52 @@ client.on("interactionCreate", async (interaction) => {
         "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol",
       ephemeral: true,
     });
+  }
+  
+if (commandName === "tts") {
+    const texto = interaction.options.getString("texto");
+    const voiceChannel = interaction.member.voice.channel;
+
+    if (!voiceChannel) {
+      return interaction.reply({ content: "Debes estar en un canal de voz.", ephemeral: true });
+    }
+
+    await interaction.reply({ content: "🔊 Reproduciéndolo...", ephemeral: true });
+
+    try {
+      const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: interaction.guild.id,
+        adapterCreator: interaction.guild.voiceAdapterCreator,
+      });
+
+      const audioPath = path.join(__dirname, "tts_temp.mp3");
+      const tts = new gTTS(texto, "es");
+
+      tts.save(audioPath, async (err) => {
+        if (err) return console.error("Error TTS:", err);
+
+        const player = createAudioPlayer();
+        const resource = createAudioResource(audioPath);
+        connection.subscribe(player);
+        player.play(resource);
+
+        player.on(AudioPlayerStatus.Idle, () => {
+          fs.unlinkSync(audioPath);
+        });
+      });
+    } catch (error) {
+      console.error("Error en TTS:", error);
+    }
+  }
+
+  if (commandName === "tts-salir") {
+    const connection = require("@discordjs/voice").getVoiceConnection(interaction.guild.id);
+    if (connection) {
+      connection.destroy();
+      return interaction.reply("Desconectado del canal de voz.");
+    }
+    return interaction.reply({ content: "No estoy en ningún canal de voz.", ephemeral: true });
   }
 
   if (commandName === "reset") {
@@ -419,6 +474,69 @@ if (content.startsWith(`${PREFIX}tars`)) {
     );
     const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
     return message.reply(`**Usuarios conectados ahora:**\n${lista}`);
+  }
+
+if (content.startsWith(`${PREFIX}tts`)) {
+    const texto = content.slice(`${PREFIX}tts`.length).trim();
+
+    // Salir del canal de voz
+    if (texto.toLowerCase() === "salir") {
+      const connection = require("@discordjs/voice").getVoiceConnection(message.guild.id);
+      if (connection) {
+        connection.destroy();
+        return message.reply("Desconectado del canal de voz.");
+      }
+      return message.reply("No estoy en ningún canal de voz.");
+    }
+
+    if (!texto) {
+      return message.reply("Escribe algo después de `!tts`. Ej: `!tts hola a todos`");
+    }
+
+    // Verificar que el usuario esté en un canal de voz
+    const voiceChannel = message.member.voice.channel;
+    if (!voiceChannel) {
+      return message.reply("Debes estar en un canal de voz para usar este comando.");
+    }
+
+    try {
+      // Unirse al canal de voz
+      const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: message.guild.id,
+        adapterCreator: message.guild.voiceAdapterCreator,
+      });
+
+      // Generar audio TTS
+      const audioPath = path.join(__dirname, "tts_temp.mp3");
+      const tts = new gTTS(texto, "es");
+
+      tts.save(audioPath, async (err) => {
+        if (err) {
+          console.error("Error TTS:", err);
+          return message.reply("Error al generar el audio.");
+        }
+
+        // Reproducir audio
+        const player = createAudioPlayer();
+        const resource = createAudioResource(audioPath);
+        connection.subscribe(player);
+        player.play(resource);
+
+        player.on(AudioPlayerStatus.Idle, () => {
+          fs.unlinkSync(audioPath); // Borrar archivo temporal
+        });
+
+        player.on("error", (error) => {
+          console.error("Error reproduciendo audio:", error);
+        });
+      });
+
+      message.react("🔊");
+    } catch (error) {
+      console.error("Error en TTS:", error);
+      message.reply("Error al unirme al canal de voz.");
+    }
   }
 });
 
