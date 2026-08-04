@@ -353,19 +353,26 @@ if (content.startsWith(`${PREFIX}tars`)) {
     await message.channel.sendTyping();
 
     // Detectar kick
-    if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
-      if (!tienePermiso(message.member))
-        return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
-      const target = message.mentions.members.first();
-      if (!target) return message.reply("Necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
-      if (!target.voice.channel) return message.reply(`${target.user.username} no está en ningún canal de voz.`);
-      try {
-        await target.voice.disconnect();
-        return message.reply(`Ejecutando comando. ${target.user.username} expulsado del canal de voz. Misión completada.`);
-      } catch {
-        return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
-      }
-    }
+if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
+  if (!tienePermiso(message.member))
+    return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
+  
+  const target = message.mentions.members.first();
+  if (!target) return message.reply("Necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
+
+  // Forzar fetch del miembro para obtener estado de voz actualizado
+  const freshTarget = await message.guild.members.fetch(target.id);
+  
+  if (!freshTarget.voice.channelId) return message.reply(`${freshTarget.user.username} no está en ningún canal de voz.`);
+  
+  try {
+    await freshTarget.voice.disconnect();
+    return message.reply(`Ejecutando comando. ${freshTarget.user.username} expulsado del canal de voz. Misión completada.`);
+  } catch (err) {
+    console.error("Error kick:", err);
+    return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
+  }
+}
 
     // Detectar resumir
     if (/resum[ei]/i.test(userMessage)) {
