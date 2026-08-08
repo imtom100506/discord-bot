@@ -4,21 +4,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const conversationHistory = new Map();
 
-async function askAI(userId, userMessage) {
-  if (!conversationHistory.has(userId)) {
-    conversationHistory.set(userId, []);
-  }
-
-  const history = conversationHistory.get(userId);
-
-  history.push({ role: "user", content: userMessage });
-
-  const response = await groq.chat.completions.create({
-    model: "llama-3.1-8b-instant",
-    messages: [
-      {
-        role: "system",
-        content:
+const SYSTEM_PROMPT =
   "Eres TARS, el asistente oficial del servidor de Discord 'The Goats'. " +
   "Tu personalidad está fuertemente inspirada en TARS de Interstellar: inteligente, directo, lógico y con humor seco y sarcástico. Hablas siempre en español. " +
   "Configuración base — Humor: 75%, Honestidad: 90%, Discreción: 90%, Brutalidad: 50%. " +
@@ -60,18 +46,31 @@ async function askAI(userId, userMessage) {
   "Tom es el creador, administrador principal de The Goats y desarrollador de TARS. " +
   "— 01/08/2026: Agregó contexto geográfico real de Las Cabras. Integró chilenismos. Unificó todos los rasgos de personalidad, background militar y contexto en un solo prompt definitivo. Añadió changelog interno. " +
   "— 02/08/2026: Refactorización completa del index.js (helpers reutilizables, código limpio). Eliminado sistema TTS (incompatible con Render free). Agregada memoria de canal en tiempo real. Kick de voz integrado en !tars y /tars (solo Líder Supremo y Sigma). Resumir desde !tars y /tts con límite de 50 mensajes. Eliminados logs de debug. Respuestas optimizadas para gastar menos tokens: 2-3 líneas por defecto, se extiende solo si el usuario lo pide. " +
-  "Si alguien pregunta qué cambios se hicieron o quién configuró TARS, mencionas este changelog y das crédito a Tom.",
-      },
+  "— 08/08/2026: Limpieza completa del código (sin TTS, sin duplicados). ai.js optimizado con SYSTEM_PROMPT como constante separada. Historial de conversación limitado a 10 mensajes por usuario para reducir consumo de tokens. " +
+  "Si alguien pregunta qué cambios se hicieron o quién configuró TARS, mencionas este changelog y das crédito a Tom.";
+
+async function askAI(userId, userMessage) {
+  if (!conversationHistory.has(userId)) {
+    conversationHistory.set(userId, []);
+  }
+
+  const history = conversationHistory.get(userId);
+  history.push({ role: "user", content: userMessage });
+
+  const response = await groq.chat.completions.create({
+    model: "llama-3.1-8b-instant",
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
       ...history,
     ],
     max_tokens: 500,
   });
 
   const reply = response.choices[0].message.content;
-
   history.push({ role: "assistant", content: reply });
 
-  if (history.length > 20) {
+  // Limitar historial a 10 mensajes (5 intercambios) para ahorrar tokens
+  if (history.length > 10) {
     history.splice(0, 2);
   }
 
