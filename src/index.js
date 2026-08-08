@@ -1,27 +1,4 @@
 require("dotenv").config();
-require("mediaplex");
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require("@discordjs/voice");
-const gTTS = require("gtts");
-const fs = require("fs");
-const path = require("path");
-const ffmpeg = require("ffmpeg-static");
-// Memoria de contexto por canal (últimos 50 mensajes)
-const channelContext = new Map();
-
-function addToChannelContext(channelId, username, content) {
-  if (!channelContext.has(channelId)) {
-    channelContext.set(channelId, []);
-  }
-  const context = channelContext.get(channelId);
-  context.push(`${username}: ${content}`);
-  if (context.length > 50) context.shift();
-}
-
-function getChannelContext(channelId) {
-  const context = channelContext.get(channelId);
-  if (!context || context.length === 0) return "";
-  return "Contexto reciente del canal:\n" + context.join("\n") + "\n\n";
-}
 const {
   Client,
   GatewayIntentBits,
@@ -36,6 +13,7 @@ const keepAlive = require("./keepAlive");
 keepAlive();
 
 // ── Memoria de contexto por canal (últimos 50 mensajes) ──
+const channelContext = new Map();
 
 function addToChannelContext(channelId, username, content) {
   if (!channelContext.has(channelId)) channelContext.set(channelId, []);
@@ -85,15 +63,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName("ayuda")
     .setDescription("Muestra todos los comandos disponibles"),
-new SlashCommandBuilder()
-    .setName("tts")
-    .setDescription("TARS habla en el canal de voz")
-    .addStringOption((option) =>
-      option.setName("texto").setDescription("Texto que quieres que TARS diga").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("tts-salir")
-    .setDescription("TARS sale del canal de voz"),
   new SlashCommandBuilder()
     .setName("resumir")
     .setDescription("TARS resume los últimos mensajes del canal")
@@ -179,59 +148,6 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 
-if (commandName === "tts") {
-    const texto = interaction.options.getString("texto");
-    const voiceChannel = interaction.member.voice.channel;
-
-    if (!voiceChannel) {
-      return interaction.reply({ content: "Debes estar en un canal de voz.", flags: 64 });
-    }
-
-    await interaction.reply({ content: `Reproduciendo: "${texto}"`, flags: 64 });
-
-    try {
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: interaction.guild.id,
-        adapterCreator: interaction.guild.voiceAdapterCreator,
-        selfDeaf: false,
-      });
-
-      const audioPath = path.join(__dirname, `tts_${Date.now()}.mp3`);
-      const tts = new gTTS(texto, "es");
-
-      tts.save(audioPath, (err) => {
-        if (err) return console.error("Error TTS:", err);
-
-        const player = createAudioPlayer();
-        const resource = createAudioResource(audioPath);
-
-        connection.subscribe(player);
-        player.play(resource);
-
-        player.on(AudioPlayerStatus.Idle, () => {
-          try { fs.unlinkSync(audioPath); } catch (e) {}
-        });
-
-        player.on("error", (error) => {
-          console.error("Error reproduciendo audio:", error.message);
-        });
-      });
-
-    } catch (error) {
-      console.error("Error en TTS:", error);
-    }
-  }
-
-  if (commandName === "tts-salir") {
-    const connection = require("@discordjs/voice").getVoiceConnection(interaction.guild.id);
-    if (connection) {
-      connection.destroy();
-      return interaction.reply("Desconectado del canal de voz.");
-    }
-    return interaction.reply({ content: "No estoy en ningún canal de voz.", ephemeral: true });
-  }
-
   if (commandName === "reset") {
     clearHistory(interaction.user.id);
     return interaction.reply({ content: "Historial borrado. Empezamos de cero.", flags: 64 });
@@ -277,15 +193,16 @@ if (commandName === "tts") {
     if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
       if (!tienePermiso(interaction.member))
         return interaction.editReply("Negativo. No tienes rango suficiente para ordenarme eso.");
-      const target = interaction.guild.members.cache.find((m) =>
-        userMessage.toLowerCase().includes(m.user.username.toLowerCase())
+      const target = await interaction.guild.members.fetch().then((members) =>
+        members.find((m) => userMessage.toLowerCase().includes(m.user.username.toLowerCase()))
       );
-      if (!target) return interaction.editReply("Necesito que menciones al usuario. Ej: `/tars saca a @usuario del canal de voz`");
-      if (!target.voice.channel) return interaction.editReply(`${target.user.username} no está en ningún canal de voz.`);
+      if (!target) return interaction.editReply("Necesito que menciones al usuario.");
+      if (!target.voice.channelId) return interaction.editReply(`${target.user.username} no está en ningún canal de voz.`);
       try {
         await target.voice.disconnect();
         return interaction.editReply(`Ejecutando comando. ${target.user.username} expulsado del canal de voz. Misión completada.`);
-      } catch {
+      } catch (err) {
+        console.error("Error kick:", err);
         return interaction.editReply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
       }
     }
@@ -321,7 +238,6 @@ if (commandName === "tts") {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // Guardar en contexto del canal silenciosamente
   addToChannelContext(message.channel.id, message.author.username, message.content);
 
   const content = message.content.trim();
@@ -346,33 +262,27 @@ client.on("messageCreate", async (message) => {
     return message.reply("Historial borrado. Empezamos de cero.");
   }
 
-if (content.startsWith(`${PREFIX}tars`)) {
+  if (content.startsWith(`${PREFIX}tars`)) {
     const userMessage = content.slice(`${PREFIX}tars`.length).trim();
     if (!userMessage) return message.reply("Escribe algo después de `!tars`");
-
     await message.channel.sendTyping();
 
     // Detectar kick
-if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
-  if (!tienePermiso(message.member))
-    return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
-  
-  const target = message.mentions.members.first();
-  if (!target) return message.reply("Necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
-
-  // Forzar fetch del miembro para obtener estado de voz actualizado
-  const freshTarget = await message.guild.members.fetch(target.id);
-  
-  if (!freshTarget.voice.channelId) return message.reply(`${freshTarget.user.username} no está en ningún canal de voz.`);
-  
-  try {
-    await freshTarget.voice.disconnect();
-    return message.reply(`Ejecutando comando. ${freshTarget.user.username} expulsado del canal de voz. Misión completada.`);
-  } catch (err) {
-    console.error("Error kick:", err);
-    return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
-  }
-}
+    if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
+      if (!tienePermiso(message.member))
+        return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
+      const target = message.mentions.members.first();
+      if (!target) return message.reply("Necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
+      const freshTarget = await message.guild.members.fetch(target.id);
+      if (!freshTarget.voice.channelId) return message.reply(`${freshTarget.user.username} no está en ningún canal de voz.`);
+      try {
+        await freshTarget.voice.disconnect();
+        return message.reply(`Ejecutando comando. ${freshTarget.user.username} expulsado del canal de voz. Misión completada.`);
+      } catch (err) {
+        console.error("Error kick:", err);
+        return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
+      }
+    }
 
     // Detectar resumir
     if (/resum[ei]/i.test(userMessage)) {
@@ -435,93 +345,6 @@ if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
     );
     const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
     return message.reply(`**Usuarios conectados ahora:**\n${lista}`);
-  }
-
-if (content.startsWith(`${PREFIX}tts`)) {
-    const texto = content.slice(`${PREFIX}tts`.length).trim();
-
-    if (texto.toLowerCase() === "salir") {
-      const { getVoiceConnection } = require("@discordjs/voice");
-      const connection = getVoiceConnection(message.guild.id);
-      if (connection) {
-        connection.destroy();
-        return message.reply("Desconectado del canal de voz.");
-      }
-      return message.reply("No estoy en ningún canal de voz.");
-    }
-
-    if (!texto) {
-      return message.reply("Escribe algo después de `!tts`. Ej: `!tts hola a todos`");
-    }
-
-    const voiceChannel = message.member.voice.channel;
-    if (!voiceChannel) {
-      return message.reply("Debes estar en un canal de voz para usar este comando.");
-    }
-
-    try {
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-        selfDeaf: false,
-      });
-
-      const audioPath = path.join(__dirname, `tts_${Date.now()}.mp3`);
-      const tts = new gTTS(texto, "es");
-
-      tts.save(audioPath, (err) => {
-        tts.save(audioPath, (err) => {
-  if (err) {
-    console.error("Error TTS:", err);
-    return message.reply("Error al generar el audio.");
-  }
-
-  console.log("Audio generado en:", audioPath);
-  console.log("Archivo existe:", fs.existsSync(audioPath));
-
-  const player = createAudioPlayer();
-  const resource = createAudioResource(audioPath);
-
-  console.log("Player creado, reproduciendo...");
-  connection.subscribe(player);
-  player.play(resource);
-
-  player.on(AudioPlayerStatus.Idle, () => {
-    console.log("Audio terminado");
-    try { fs.unlinkSync(audioPath); } catch (e) {}
-  });
-
-  player.on("error", (error) => {
-    console.error("Error reproduciendo audio:", error.message);
-  });
-});
-        if (err) {
-          console.error("Error TTS:", err);
-          return message.reply("Error al generar el audio.");
-        }
-
-        const player = createAudioPlayer();
-        const resource = createAudioResource(audioPath);
-
-        connection.subscribe(player);
-        player.play(resource);
-
-        message.reply(`Reproduciendo: "${texto}"`);
-
-        player.on(AudioPlayerStatus.Idle, () => {
-          try { fs.unlinkSync(audioPath); } catch (e) {}
-        });
-
-        player.on("error", (error) => {
-          console.error("Error reproduciendo audio:", error.message);
-        });
-      });
-
-    } catch (error) {
-      console.error("Error en TTS:", error);
-      message.reply("Error al unirme al canal de voz.");
-    }
   }
 });
 
