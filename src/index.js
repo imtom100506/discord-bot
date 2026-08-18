@@ -351,6 +351,17 @@ client.on("messageCreate", async (message) => {
 console.log("DISCORD_TOKEN existe:", !!process.env.DISCORD_TOKEN);
 console.log("Token primeros 10 chars:", process.env.DISCORD_TOKEN?.substring(0, 10));
 
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log("Login exitoso"))
+  .catch((err) => {
+    console.error("Error login:", err.message);
+    process.exit(1);
+  });
+
+setTimeout(() => {
+  console.log("Estado WebSocket:", client.ws.status);
+}, 15000);
+
 // ── Login ────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN).catch((err) => {
   console.error("Error al conectar con Discord:", err.message);
