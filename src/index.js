@@ -349,9 +349,6 @@ client.on("messageCreate", async (message) => {
   }
 });
 
-console.log("DISCORD_TOKEN existe:", !!process.env.DISCORD_TOKEN);
-console.log("Token primeros 10 chars:", process.env.DISCORD_TOKEN?.substring(0, 10));
-
 client.login(process.env.DISCORD_TOKEN)
   .then(() => console.log("Login exitoso"))
   .catch((err) => {
