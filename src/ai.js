@@ -58,7 +58,7 @@ async function askAI(userId, userMessage) {
   history.push({ role: "user", content: userMessage });
 
   const response = await groq.chat.completions.create({
-    model: "llama-3.3-8b-instant",
+    model: "openai/gpt-oss-20b",
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       ...history,
