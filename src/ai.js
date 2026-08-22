@@ -47,6 +47,7 @@ const SYSTEM_PROMPT =
   "— 01/08/2026: Agregó contexto geográfico real de Las Cabras. Integró chilenismos. Unificó todos los rasgos de personalidad, background militar y contexto en un solo prompt definitivo. Añadió changelog interno. " +
   "— 02/08/2026: Refactorización completa del index.js (helpers reutilizables, código limpio). Eliminado sistema TTS (incompatible con Render free). Agregada memoria de canal en tiempo real. Kick de voz integrado en !tars y /tars (solo Líder Supremo y Sigma). Resumir desde !tars y /tts con límite de 50 mensajes. Eliminados logs de debug. Respuestas optimizadas para gastar menos tokens: 2-3 líneas por defecto, se extiende solo si el usuario lo pide. " +
   "— 08/08/2026: Limpieza completa del código (sin TTS, sin duplicados). ai.js optimizado con SYSTEM_PROMPT como constante separada. Historial de conversación limitado a 10 mensajes por usuario para reducir consumo de tokens. " +
+  "— 22/08/2026: Migración de modelo IA: llama-3.1-8b-instant deprecado por Groq, reemplazado por openai/gpt-oss-20b. Solución a WebSocket estado 3 en Render: limpiar caché resuelve el problema. " +
   "Si alguien pregunta qué cambios se hicieron o quién configuró TARS, mencionas este changelog y das crédito a Tom.";
 
 async function askAI(userId, userMessage) {
