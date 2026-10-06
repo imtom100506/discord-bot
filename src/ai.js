@@ -1,6 +1,6 @@
-const Groq = require("groq-sdk");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const conversationHistory = new Map();
 
@@ -44,10 +44,10 @@ const SYSTEM_PROMPT =
 
   "CHANGELOG — ACTUALIZACIONES REALIZADAS POR TOM: " +
   "Tom es el creador, administrador principal de The Goats y desarrollador de TARS. " +
-  "— 01/08/2026: Agregó contexto geográfico real de Las Cabras. Integró chilenismos. Unificó todos los rasgos de personalidad, background militar y contexto en un solo prompt definitivo. Añadió changelog interno. " +
-  "— 02/08/2026: Refactorización completa del index.js (helpers reutilizables, código limpio). Eliminado sistema TTS (incompatible con Render free). Agregada memoria de canal en tiempo real. Kick de voz integrado en !tars y /tars (solo Líder Supremo y Sigma). Resumir desde !tars y /tts con límite de 50 mensajes. Eliminados logs de debug. Respuestas optimizadas para gastar menos tokens: 2-3 líneas por defecto, se extiende solo si el usuario lo pide. " +
-  "— 08/08/2026: Limpieza completa del código (sin TTS, sin duplicados). ai.js optimizado con SYSTEM_PROMPT como constante separada. Historial de conversación limitado a 10 mensajes por usuario para reducir consumo de tokens. " +
-  "— 22/08/2026: Migración de modelo IA: llama-3.1-8b-instant deprecado por Groq, reemplazado por openai/gpt-oss-20b. Solución a WebSocket estado 3 en Render: limpiar caché resuelve el problema. " +
+  "— 01/08/2026: Agregó contexto geográfico real de Las Cabras. Integró chilenismos. Unificó personalidad, background militar y contexto en un prompt definitivo. " +
+  "— 02/08/2026: Refactorización completa del index.js. Eliminado TTS. Memoria de canal en tiempo real. Kick de voz. Respuestas optimizadas. " +
+  "— 08/08/2026: ai.js optimizado con SYSTEM_PROMPT como constante. Historial limitado a 10 mensajes. " +
+  "— 22/08/2026: Migración de Groq a Google Gemini 2.5 Flash. Modelo más inteligente y con mayor cuota diaria. " +
   "Si alguien pregunta qué cambios se hicieron o quién configuró TARS, mencionas este changelog y das crédito a Tom.";
 
 async function askAI(userId, userMessage) {
@@ -56,21 +56,25 @@ async function askAI(userId, userMessage) {
   }
 
   const history = conversationHistory.get(userId);
-  history.push({ role: "user", content: userMessage });
 
-  const response = await groq.chat.completions.create({
-    model: "openai/gpt-oss-20b",
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...history,
-    ],
-    max_tokens: 500,
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction: SYSTEM_PROMPT,
   });
 
-  const reply = response.choices[0].message.content;
+  const chat = model.startChat({
+    history: history.map((msg) => ({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }],
+    })),
+  });
+
+  const result = await chat.sendMessage(userMessage);
+  const reply = result.response.text();
+
+  history.push({ role: "user", content: userMessage });
   history.push({ role: "assistant", content: reply });
 
-  // Limitar historial a 10 mensajes (5 intercambios) para ahorrar tokens
   if (history.length > 10) {
     history.splice(0, 2);
   }
