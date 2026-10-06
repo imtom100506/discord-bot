@@ -138,16 +138,25 @@ async function execute(ctx, command, argument) {
   void sendLog("mensaje", { usuario: ctx.user.username, canal: ctx.channel.name || "privado", mensaje: text });
   const serverContext = await getServerContext(ctx.guild);
   const recent = channelContext.get(ctx.channel.id) || [];
-  const response = await askAI(ctx.user.id, `${serverContext}\n\nContexto reciente del canal:\n${recent.join("\n")}\n\nPregunta: ${text}`);
+  const response = await askAI(ctx.user.id, text, {
+    context: `${serverContext}\n\nContexto reciente del canal:\n${recent.join("\n")}`,
+  });
   void sendLog("respuesta", { usuario: ctx.user.username, respuesta: response });
   await ctx.reply(response);
 }
 
 async function handleError(ctx, error) {
   console.error("Error ejecutando comando:", error);
-  void sendLog("error", { usuario: ctx.user.username, error: error.message || String(error) });
+  void sendLog("error", { usuario: ctx.user.username, error: error.cause?.message || error.message || String(error) });
   if (error.code === 10062 || error.code === 10015) return;
-  try { await ctx.reply("Hubo un error. Intenta de nuevo."); }
+  const response = error.code === "AI_UNAVAILABLE"
+    ? "Los proveedores de IA están saturados o alcanzaron su cuota gratuita. Prueba de nuevo más tarde."
+    : error.code === "AI_BUSY"
+    ? "Tengo varias consultas pendientes. Prueba de nuevo en un momento."
+    : error.code === "AI_CONFIG"
+    ? "Falta configurar el acceso a la IA. Avísale a Tom."
+    : "Hubo un error. Intenta de nuevo.";
+  try { await ctx.reply(response); }
   catch (replyError) { console.error("No se pudo enviar el error:", replyError.message); }
 }
 
