@@ -10,6 +10,79 @@ const {
 const { askAI, clearHistory } = require("./ai");
 const keepAlive = require("./keepAlive");
 
+// ── Sistema de logs ──────────────────────────────────────
+async function sendLog(type, data) {
+  try {
+    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
+    if (!channel) return;
+
+    const timestamp = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
+
+    const logs = {
+      mensaje: () =>
+        `\`[${timestamp}]\` 💬 **MENSAJE**\n` +
+        `👤 Usuario: \`${data.user}\`\n` +
+        `📍 Canal: \`#${data.channel}\`\n` +
+        `💭 Mensaje: ${data.content.slice(0, 200)}${data.content.length > 200 ? "..." : ""}`,
+
+      respuesta: () =>
+        `\`[${timestamp}]\` 🤖 **RESPUESTA**\n` +
+        `👤 Para: \`${data.user}\`\n` +
+        `📝 Respuesta: ${data.content.slice(0, 200)}${data.content.length > 200 ? "..." : ""}`,
+
+      error: () =>
+        `\`[${timestamp}]\` ❌ **ERROR IA**\n` +
+        `👤 Usuario: \`${data.user}\`\n` +
+        `⚠️ Error: \`${data.error}\``,
+
+      kick: () =>
+        `\`[${timestamp}]\` 🦵 **KICK DE VOZ**\n` +
+        `👮 Ejecutado por: \`${data.executor}\`\n` +
+        `🎯 Objetivo: \`${data.target}\`\n` +
+        `📍 Canal: \`${data.voiceChannel}\``,
+
+      kick_denegado: () =>
+        `\`[${timestamp}]\` 🚫 **KICK DENEGADO**\n` +
+        `👤 Usuario: \`${data.user}\` no tiene permisos suficientes.`,
+
+      resumir: () =>
+        `\`[${timestamp}]\` 📋 **RESUMEN SOLICITADO**\n` +
+        `👤 Usuario: \`${data.user}\`\n` +
+        `📍 Canal: \`#${data.channel}\`\n` +
+        `🔢 Mensajes resumidos: \`${data.cantidad}\``,
+
+      reset: () =>
+        `\`[${timestamp}]\` 🗑️ **HISTORIAL BORRADO**\n` +
+        `👤 Usuario: \`${data.user}\` borró su historial.`,
+
+      usuarios: () =>
+        `\`[${timestamp}]\` 👥 **CONSULTA USUARIOS**\n` +
+        `👤 Usuario: \`${data.user}\`\n` +
+        `🔍 Filtro: \`${data.filtro || "todos conectados"}\``,
+
+      conexion: () =>
+        `\`[${timestamp}]\` ✅ **TARS CONECTADO**\n` +
+        `🤖 Bot: \`${data.tag}\`\n` +
+        `🌐 Servidores: \`${data.guilds}\``,
+
+      error_fatal: () =>
+        `\`[${timestamp}]\` 💀 **ERROR FATAL**\n` +
+        `⚠️ \`${data.error}\``,
+
+      slash: () =>
+        `\`[${timestamp}]\` ⚡ **SLASH COMMAND**\n` +
+        `👤 Usuario: \`${data.user}\`\n` +
+        `🔧 Comando: \`/${data.command}\`\n` +
+        `📍 Canal: \`#${data.channel}\``,
+    };
+
+    const message = logs[type] ? logs[type]() : `\`[${timestamp}]\` 📌 ${JSON.stringify(data)}`;
+    await channel.send(message);
+  } catch (err) {
+    console.error("Error enviando log:", err.message);
+  }
+}
+
 keepAlive();
 
 // ── Memoria de contexto por canal (últimos 50 mensajes) ──
@@ -83,6 +156,12 @@ const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 // ── Ready ────────────────────────────────────────────────
 client.once("ready", async () => {
   console.log(`✅ Bot conectado como: ${client.user.tag}`);
+  setTimeout(() => {
+    sendLog("conexion", {
+      tag: client.user.tag,
+      guilds: client.guilds.cache.size,
+    });
+  }, 3000);
   try {
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log("✅ Slash commands registrados");
@@ -123,8 +202,8 @@ function tienePermiso(member) {
 process.on("unhandledRejection", (error) => {
   if (error?.code === 10062) return;
   console.error("Error no manejado:", error);
+  sendLog("error_fatal", { error: error.message });
 });
-
 // ── Slash commands handler ───────────────────────────────
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
@@ -260,6 +339,7 @@ client.on("messageCreate", async (message) => {
 
   if (content === `${PREFIX}reset`) {
     clearHistory(message.author.id);
+    sendLog("reset", { user: message.author.username });
     return message.reply("Historial borrado. Empezamos de cero.");
   }
 
@@ -268,17 +348,30 @@ client.on("messageCreate", async (message) => {
     if (!userMessage) return message.reply("Escribe algo después de `!tars`");
     await message.channel.sendTyping();
 
+    sendLog("mensaje", {
+    user: message.author.username,
+    channel: message.channel.name,
+    content: userMessage,
+  });
+
     // Detectar kick
     if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
-      if (!tienePermiso(message.member))
+      if (!tienePermiso(message.member)) {
+        sendLog("kick_denegado", { user: message.author.username });
         return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
+      }
       const target = message.mentions.members.first();
       if (!target) return message.reply("Necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
       const freshTarget = await message.guild.members.fetch(target.id);
       if (!freshTarget.voice.channelId) return message.reply(`${freshTarget.user.username} no está en ningún canal de voz.`);
       try {
-        await freshTarget.voice.disconnect();
-        return message.reply(`Ejecutando comando. ${freshTarget.user.username} expulsado del canal de voz. Misión completada.`);
+      await freshTarget.voice.disconnect();
+      sendLog("kick", {
+        executor: message.author.username,
+        target: freshTarget.user.username,
+        voiceChannel: freshTarget.voice.channel?.name || "desconocido",
+      });
+      return message.reply(`Ejecutando comando. ${freshTarget.user.username} expulsado del canal de voz. Misión completada.`);
       } catch (err) {
         console.error("Error kick:", err);
         return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
@@ -304,6 +397,7 @@ client.on("messageCreate", async (message) => {
       const serverCtx = await getServerContext(message.guild);
       const channelCtx = getChannelContext(message.channel.id);
       const response = await askAI(message.author.id, `${serverCtx}\n\n${channelCtx}Pregunta: ${userMessage}`);
+      sendLog("respuesta", { user: message.author.username, content: response });
       if (response.length > 1900) {
         const chunks = response.match(/.{1,1900}/gs);
         for (const chunk of chunks) await message.reply(chunk);
@@ -312,6 +406,7 @@ client.on("messageCreate", async (message) => {
       }
     } catch (error) {
       console.error("Error con la IA:", error);
+      sendLog("error", { user: message.author.username, error: error.message });
       message.reply("Hubo un error. Intenta de nuevo.");
     }
   }
