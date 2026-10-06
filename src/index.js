@@ -1,462 +1,213 @@
 require("dotenv").config();
-const {
-  Client,
-  GatewayIntentBits,
-  Partials,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-} = require("discord.js");
+const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require("discord.js");
 const { askAI, clearHistory } = require("./ai");
 const keepAlive = require("./keepAlive");
+const { summaryCount, countFromText, mentionedUserId, splitResponse } = require("./commandUtils");
 
-// ── Sistema de logs ──────────────────────────────────────
-async function sendLog(type, data) {
-  try {
-    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
-    if (!channel) return;
-
-    const timestamp = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
-
-    const logs = {
-      mensaje: () =>
-        `\`[${timestamp}]\` 💬 **MENSAJE**\n` +
-        `👤 Usuario: \`${data.user}\`\n` +
-        `📍 Canal: \`#${data.channel}\`\n` +
-        `💭 Mensaje: ${data.content.slice(0, 200)}${data.content.length > 200 ? "..." : ""}`,
-
-      respuesta: () =>
-        `\`[${timestamp}]\` 🤖 **RESPUESTA**\n` +
-        `👤 Para: \`${data.user}\`\n` +
-        `📝 Respuesta: ${data.content.slice(0, 200)}${data.content.length > 200 ? "..." : ""}`,
-
-      error: () =>
-        `\`[${timestamp}]\` ❌ **ERROR IA**\n` +
-        `👤 Usuario: \`${data.user}\`\n` +
-        `⚠️ Error: \`${data.error}\``,
-
-      kick: () =>
-        `\`[${timestamp}]\` 🦵 **KICK DE VOZ**\n` +
-        `👮 Ejecutado por: \`${data.executor}\`\n` +
-        `🎯 Objetivo: \`${data.target}\`\n` +
-        `📍 Canal: \`${data.voiceChannel}\``,
-
-      kick_denegado: () =>
-        `\`[${timestamp}]\` 🚫 **KICK DENEGADO**\n` +
-        `👤 Usuario: \`${data.user}\` no tiene permisos suficientes.`,
-
-      resumir: () =>
-        `\`[${timestamp}]\` 📋 **RESUMEN SOLICITADO**\n` +
-        `👤 Usuario: \`${data.user}\`\n` +
-        `📍 Canal: \`#${data.channel}\`\n` +
-        `🔢 Mensajes resumidos: \`${data.cantidad}\``,
-
-      reset: () =>
-        `\`[${timestamp}]\` 🗑️ **HISTORIAL BORRADO**\n` +
-        `👤 Usuario: \`${data.user}\` borró su historial.`,
-
-      usuarios: () =>
-        `\`[${timestamp}]\` 👥 **CONSULTA USUARIOS**\n` +
-        `👤 Usuario: \`${data.user}\`\n` +
-        `🔍 Filtro: \`${data.filtro || "todos conectados"}\``,
-
-      conexion: () =>
-        `\`[${timestamp}]\` ✅ **TARS CONECTADO**\n` +
-        `🤖 Bot: \`${data.tag}\`\n` +
-        `🌐 Servidores: \`${data.guilds}\``,
-
-      error_fatal: () =>
-        `\`[${timestamp}]\` 💀 **ERROR FATAL**\n` +
-        `⚠️ \`${data.error}\``,
-
-      slash: () =>
-        `\`[${timestamp}]\` ⚡ **SLASH COMMAND**\n` +
-        `👤 Usuario: \`${data.user}\`\n` +
-        `🔧 Comando: \`/${data.command}\`\n` +
-        `📍 Canal: \`#${data.channel}\``,
-    };
-
-    const message = logs[type] ? logs[type]() : `\`[${timestamp}]\` 📌 ${JSON.stringify(data)}`;
-    await channel.send(message);
-  } catch (err) {
-    console.error("Error enviando log:", err.message);
-  }
-}
-
-keepAlive();
-
-// ── Memoria de contexto por canal (últimos 50 mensajes) ──
-const channelContext = new Map();
-
-function addToChannelContext(channelId, username, content) {
-  if (!channelContext.has(channelId)) channelContext.set(channelId, []);
-  const ctx = channelContext.get(channelId);
-  ctx.push(`${username}: ${content}`);
-  if (ctx.length > 50) ctx.shift();
-}
-
-function getChannelContext(channelId) {
-  const ctx = channelContext.get(channelId);
-  if (!ctx || ctx.length === 0) return "";
-  return "Contexto reciente del canal:\n" + ctx.join("\n") + "\n\n";
-}
-
-// ── Cliente ──────────────────────────────────────────────
 const client = new Client({
-  intents: [
-  GatewayIntentBits.Guilds,
-  GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent,
-  GatewayIntentBits.DirectMessages,
-  GatewayIntentBits.GuildMembers,
-  GatewayIntentBits.GuildPresences,
-  GatewayIntentBits.GuildVoiceStates,
-],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildPresences, GatewayIntentBits.GuildVoiceStates],
   partials: [Partials.Channel],
   ws: { large_threshold: 50 },
   rest: { timeout: 60000 },
+  allowedMentions: { parse: [], repliedUser: false },
 });
-
-const PREFIX = "!";
 const ROLES_AUTORIZADOS = ["Líder Supremo", "Sigma"];
+const HELP = "**Comandos disponibles:**\n" +
+  "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
+  "`!reset` o `/reset` — Borra tu historial\n" +
+  "`!ping` o `/ping` — Latencia\n" +
+  "`!resumir <cantidad>` o `/resumir` — Resume entre 1 y 50 mensajes\n" +
+  "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol\n" +
+  "`!tars saca a @usuario del canal de voz` — Desconecta de voz (Líder Supremo o Sigma)";
+const channelContext = new Map();
 
-// ── Slash commands ───────────────────────────────────────
-const commands = [
-  new SlashCommandBuilder()
-    .setName("tars")
-    .setDescription("Habla con TARS")
-    .addStringOption((o) =>
-      o.setName("mensaje").setDescription("Tu mensaje para TARS").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("reset")
-    .setDescription("Borra tu historial de conversación con TARS"),
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Verifica si TARS está activo"),
-  new SlashCommandBuilder()
-    .setName("ayuda")
-    .setDescription("Muestra todos los comandos disponibles"),
-  new SlashCommandBuilder()
-    .setName("resumir")
-    .setDescription("TARS resume los últimos mensajes del canal")
-    .addIntegerOption((o) =>
-      o.setName("cantidad").setDescription("Cuántos mensajes resumir (máx. 50)").setRequired(false)
-    ),
-  new SlashCommandBuilder()
-    .setName("usuarios")
-    .setDescription("Lista usuarios conectados o con un rol específico")
-    .addStringOption((o) =>
-      o.setName("rol").setDescription("Nombre del rol a filtrar (opcional)").setRequired(false)
-    ),
-].map((c) => c.toJSON());
-
-const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-
-// ── Ready ────────────────────────────────────────────────
-client.once("ready", async () => {
-  console.log(`✅ Bot conectado como: ${client.user.tag}`);
-  setTimeout(() => {
-    sendLog("conexion", {
-      tag: client.user.tag,
-      guilds: client.guilds.cache.size,
-    });
-  }, 3000);
+async function sendLog(type, data) {
+  if (!process.env.LOG_CHANNEL_ID) return;
   try {
+    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
+    if (!channel?.isTextBased() || typeof channel.send !== "function") return;
+    const timestamp = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
+    const details = Object.entries(data).map(([key, value]) => `${key}: ${String(value).slice(0, 400)}`).join("\n");
+    await channel.send({ content: `[${timestamp}] **${type.toUpperCase()}**\n${details}`.slice(0, 1900), allowedMentions: { parse: [] } });
+  } catch (error) {
+    console.error("Error enviando log:", error.message);
+  }
+}
+
+const commands = [
+  new SlashCommandBuilder().setName("tars").setDescription("Habla con TARS")
+    .addStringOption(o => o.setName("mensaje").setDescription("Tu mensaje para TARS").setRequired(true)),
+  new SlashCommandBuilder().setName("reset").setDescription("Borra tu historial de conversación con TARS"),
+  new SlashCommandBuilder().setName("ping").setDescription("Verifica si TARS está activo"),
+  new SlashCommandBuilder().setName("ayuda").setDescription("Muestra todos los comandos disponibles"),
+  new SlashCommandBuilder().setName("resumir").setDescription("TARS resume los últimos mensajes del canal")
+    .addIntegerOption(o => o.setName("cantidad").setDescription("Mensajes a resumir (1 a 50)").setMinValue(1).setMaxValue(50)),
+  new SlashCommandBuilder().setName("usuarios").setDescription("Lista usuarios conectados o con un rol específico")
+    .addStringOption(o => o.setName("rol").setDescription("Nombre del rol a filtrar (opcional)")),
+].map(command => command.toJSON());
+
+client.once("ready", async () => {
+  console.log(`Bot conectado como: ${client.user.tag}`);
+  void sendLog("conexion", { bot: client.user.tag, servidores: client.guilds.cache.size });
+  try {
+    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log("✅ Slash commands registrados");
+    console.log("Slash commands registrados");
   } catch (error) {
     console.error("Error registrando comandos:", error);
   }
 });
 
-// ── Helpers ──────────────────────────────────────────────
 async function getServerContext(guild) {
+  if (!guild) return "Conversación por mensaje privado.";
+  const members = guild.members.cache.filter(member => !member.user.bot);
+  const online = members.filter(member => member.presence?.status && member.presence.status !== "offline");
+  return `Contexto del servidor "${guild.name}": ${members.size} miembros humanos en caché, ${online.size} conectados observados.`;
+}
+
+async function summarize(ctx, count) {
+  const messages = await ctx.channel.messages.fetch({ limit: count });
+  const selected = [...messages.values()].reverse().filter(message => !message.author.bot && message.id !== ctx.messageId);
+  const history = selected.map(message => `${message.author.username}: ${message.content}`).join("\n");
+  if (!history) return ctx.reply("No hay mensajes para resumir.");
+  void sendLog("resumir", { usuario: ctx.user.username, canal: ctx.channel.name, cantidad: selected.length });
+  const response = await askAI(ctx.user.id, `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${history}`);
+  await ctx.reply(`**Resumen de ${selected.length} mensajes:**\n${response}`);
+}
+
+async function disconnect(ctx, text) {
+  const member = await ctx.guild.members.fetch(ctx.user.id);
+  if (!member.roles.cache.some(role => ROLES_AUTORIZADOS.includes(role.name))) {
+    void sendLog("kick_denegado", { usuario: ctx.user.username });
+    return ctx.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
+  }
+  const targetId = mentionedUserId(text);
+  if (!targetId) return ctx.reply("Menciona exactamente a un usuario. Ej: `!tars saca a @usuario del canal de voz`");
+  const target = await ctx.guild.members.fetch(targetId).catch(error => {
+    if (error.code === 10007) return null;
+    throw error;
+  });
+  if (!target) return ctx.reply("No encontré a ese usuario en el servidor.");
+  if (!target.voice.channelId) return ctx.reply(`${target.user.username} no está en ningún canal de voz.`);
+  const voiceChannel = target.voice.channel?.name || target.voice.channelId;
   try {
-    if (guild.members.cache.size < 2) await guild.members.fetch();
-    const members = guild.members.cache;
-    const online = members.filter((m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline");
-    const total = members.filter((m) => !m.user.bot);
-    return `Contexto del servidor "${guild.name}": ${total.size} miembros en total, ${online.size} conectados ahora mismo.`;
-  } catch {
-    return `Contexto del servidor "${guild.name}".`;
+    await target.voice.disconnect(`Solicitado por ${ctx.user.username} (${ctx.user.id})`);
+  } catch (error) {
+    console.error("Error kick:", error);
+    void sendLog("error", { comando: "kick", usuario: ctx.user.username, error: error.message });
+    return ctx.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
   }
+  void sendLog("kick", { ejecutor: ctx.user.username, objetivo: target.user.username, canal: voiceChannel });
+  await ctx.reply(`Ejecutando comando. ${target.user.username} expulsado del canal de voz. Misión completada.`);
 }
 
-async function resumirMensajes(channel, cantidad, userId) {
-  const mensajes = await channel.messages.fetch({ limit: cantidad });
-  const historial = mensajes
-    .reverse()
-    .filter((m) => !m.author.bot)
-    .map((m) => `${m.author.username}: ${m.content}`)
-    .join("\n");
-  if (!historial) return null;
-  return await askAI(userId, `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${historial}`);
+async function execute(ctx, command, argument) {
+  if (command === "ping") return ctx.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
+  if (command === "ayuda") return ctx.reply(HELP);
+  if (command === "reset") {
+    clearHistory(ctx.user.id);
+    void sendLog("reset", { usuario: ctx.user.username });
+    return ctx.reply("Historial borrado. Empezamos de cero.");
+  }
+  const text = String(argument ?? "").trim();
+  const isKick = command === "tars" && /\b(kick|expulsa|saca|bota|desconecta)\b/i.test(text);
+  const isSummary = command === "resumir" || (command === "tars" && /\bresum(?:e|ir)\b/i.test(text));
+  if (!ctx.guild && (command === "usuarios" || isKick || isSummary)) {
+    return ctx.reply("Este comando solo está disponible dentro de un servidor.");
+  }
+  if (command === "usuarios") {
+    await ctx.guild.members.fetch();
+    void sendLog("usuarios", { usuario: ctx.user.username, filtro: text || "conectados" });
+    const role = text ? ctx.guild.roles.cache.find(role => role.name.toLowerCase() === text.toLowerCase()) : null;
+    if (text && !role) return ctx.reply(`No encontré el rol "${text}".`);
+    const members = role ? role.members.filter(member => !member.user.bot) : ctx.guild.members.cache.filter(
+      member => !member.user.bot && member.presence?.status && member.presence.status !== "offline");
+    return ctx.reply(`**${role ? `Usuarios con el rol "${role.name}"` : "Usuarios conectados ahora"}:**\n` +
+      (members.map(member => `- ${member.user.username}`).join("\n") || "Ninguno"));
+  }
+  if (isKick) return disconnect(ctx, text);
+  if (isSummary) {
+    let count;
+    try { count = command === "resumir" ? summaryCount(argument) : countFromText(text); }
+    catch (error) { return ctx.reply(error.message); }
+    return summarize(ctx, count);
+  }
+  if (!text) return ctx.reply("Escribe algo después de `!tars`");
+  void sendLog("mensaje", { usuario: ctx.user.username, canal: ctx.channel.name || "privado", mensaje: text });
+  const serverContext = await getServerContext(ctx.guild);
+  const recent = channelContext.get(ctx.channel.id) || [];
+  const response = await askAI(ctx.user.id, `${serverContext}\n\nContexto reciente del canal:\n${recent.join("\n")}\n\nPregunta: ${text}`);
+  void sendLog("respuesta", { usuario: ctx.user.username, respuesta: response });
+  await ctx.reply(response);
 }
 
-function tienePermiso(member) {
-  return member.roles.cache.some((r) => ROLES_AUTORIZADOS.includes(r.name));
+async function handleError(ctx, error) {
+  console.error("Error ejecutando comando:", error);
+  void sendLog("error", { usuario: ctx.user.username, error: error.message || String(error) });
+  if (error.code === 10062 || error.code === 10015) return;
+  try { await ctx.reply("Hubo un error. Intenta de nuevo."); }
+  catch (replyError) { console.error("No se pudo enviar el error:", replyError.message); }
 }
 
-// ── Manejo de errores global ─────────────────────────────
-process.on("unhandledRejection", (error) => {
-  if (error?.code === 10062) return;
-  console.error("Error no manejado:", error);
-  sendLog("error_fatal", { error: error.message });
-});
-// ── Slash commands handler ───────────────────────────────
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (!interaction.isRepliable()) return;
-
-  const { commandName } = interaction;
-
-  if (commandName === "ping") {
-    return interaction.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
-  }
-
-  if (commandName === "ayuda") {
-    return interaction.reply({
-      content:
-        "**Comandos disponibles:**\n" +
-        "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
-        "`!reset` o `/reset` — Borra tu historial\n" +
-        "`!ping` o `/ping` — Latencia\n" +
-        "`!resumir <cantidad>` o `/resumir` — Resume los últimos mensajes\n" +
-        "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol",
-      flags: 64,
-    });
-  }
-
-  if (commandName === "reset") {
-    clearHistory(interaction.user.id);
-    return interaction.reply({ content: "Historial borrado. Empezamos de cero.", flags: 64 });
-  }
-
-  if (commandName === "usuarios") {
-    await interaction.deferReply();
-    if (interaction.guild.members.cache.size < 2) await interaction.guild.members.fetch();
-    const rolNombre = interaction.options.getString("rol");
-
-    if (rolNombre) {
-      const rol = interaction.guild.roles.cache.find((r) => r.name.toLowerCase() === rolNombre.toLowerCase());
-      if (!rol) return interaction.editReply(`No encontré el rol "${rolNombre}".`);
-      const miembros = rol.members.filter((m) => !m.user.bot);
-      const lista = miembros.map((m) => `- ${m.user.username}`).join("\n") || "Ninguno";
-      return interaction.editReply(`**Usuarios con el rol "${rol.name}":**\n${lista}`);
-    }
-
-    const conectados = interaction.guild.members.cache.filter(
-      (m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline"
-    );
-    const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
-    return interaction.editReply(`**Usuarios conectados ahora:**\n${lista}`);
-  }
-
-  if (commandName === "resumir") {
-    await interaction.deferReply();
-    const cantidad = Math.min(interaction.options.getInteger("cantidad") || 20, 50);
-    try {
-      const resumen = await resumirMensajes(interaction.channel, cantidad, interaction.user.id);
-      if (!resumen) return interaction.editReply("No hay mensajes para resumir.");
-      await interaction.editReply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-    } catch {
-      await interaction.editReply("Error al resumir. Intenta de nuevo.");
-    }
-  }
-
-  if (commandName === "tars") {
-    const userMessage = interaction.options.getString("mensaje");
-    await interaction.deferReply();
-
-    // Detectar kick
-    if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
-      if (!tienePermiso(interaction.member))
-        return interaction.editReply("Negativo. No tienes rango suficiente para ordenarme eso.");
-      const target = await interaction.guild.members.fetch().then((members) =>
-        members.find((m) => userMessage.toLowerCase().includes(m.user.username.toLowerCase()))
-      );
-      if (!target) return interaction.editReply("Necesito que menciones al usuario.");
-      if (!target.voice.channelId) return interaction.editReply(`${target.user.username} no está en ningún canal de voz.`);
-      try {
-        await target.voice.disconnect();
-        return interaction.editReply(`Ejecutando comando. ${target.user.username} expulsado del canal de voz. Misión completada.`);
-      } catch (err) {
-        console.error("Error kick:", err);
-        return interaction.editReply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand() || !interaction.isRepliable()) return;
+  if (!commands.some(command => command.name === interaction.commandName)) return;
+  const ctx = {
+    user: interaction.user, guild: interaction.guild, channel: interaction.channel,
+    reply: async text => {
+      for (const chunk of splitResponse(text)) {
+        const payload = { content: chunk, allowedMentions: { parse: [], repliedUser: false } };
+        if (interaction.replied) await interaction.followUp(payload);
+        else if (interaction.deferred) await interaction.editReply(payload);
+        else await interaction.reply(payload);
       }
-    }
-
-    // Detectar resumir
-    if (/resum[ei]/i.test(userMessage)) {
-      const numMatch = userMessage.match(/\d+/);
-      const cantidad = numMatch ? parseInt(numMatch[0]) : 20;
-      if (cantidad > 50) return interaction.editReply("Error. El máximo permitido es 50 mensajes.");
-      try {
-        const resumen = await resumirMensajes(interaction.channel, cantidad, interaction.user.id);
-        if (!resumen) return interaction.editReply("No hay mensajes para resumir.");
-        return interaction.editReply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-      } catch {
-        return interaction.editReply("Error al resumir. Intenta de nuevo.");
-      }
-    }
-
-    // Respuesta normal de IA
-    try {
-      const serverCtx = await getServerContext(interaction.guild);
-      const channelCtx = getChannelContext(interaction.channelId);
-      const response = await askAI(interaction.user.id, `${serverCtx}\n\n${channelCtx}Pregunta: ${userMessage}`);
-      await interaction.editReply(response);
-    } catch (error) {
-      console.error("Error con la IA:", error);
-      await interaction.editReply("Hubo un error. Intenta de nuevo.");
-    }
-  }
+    },
+  };
+  try {
+    await interaction.deferReply(["reset", "ayuda"].includes(interaction.commandName) ? { flags: 64 } : {});
+    void sendLog("slash", { usuario: ctx.user.username, comando: interaction.commandName, canal: ctx.channel?.name || "privado" });
+    const argument = interaction.commandName === "resumir" ? interaction.options.getInteger("cantidad") :
+      interaction.commandName === "usuarios" ? interaction.options.getString("rol") :
+      interaction.commandName === "tars" ? interaction.options.getString("mensaje") : null;
+    await execute(ctx, interaction.commandName, argument);
+  } catch (error) { await handleError(ctx, error); }
 });
 
-// ── Prefix commands handler ──────────────────────────────
-client.on("messageCreate", async (message) => {
+client.on("messageCreate", async message => {
   if (message.author.bot) return;
-
-  addToChannelContext(message.channel.id, message.author.username, message.content);
-
-  const content = message.content.trim();
-
-  if (content === `${PREFIX}ayuda`) {
-    return message.reply(
-      "**Comandos disponibles:**\n" +
-        "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
-        "`!reset` o `/reset` — Borra tu historial\n" +
-        "`!ping` o `/ping` — Latencia\n" +
-        "`!resumir <cantidad>` o `/resumir` — Resume los últimos mensajes\n" +
-        "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol"
-    );
-  }
-
-  if (content === `${PREFIX}ping`) {
-    return message.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
-  }
-
-  if (content === `${PREFIX}reset`) {
-    clearHistory(message.author.id);
-    sendLog("reset", { user: message.author.username });
-    return message.reply("Historial borrado. Empezamos de cero.");
-  }
-
-  if (content.startsWith(`${PREFIX}tars`)) {
-    const userMessage = content.slice(`${PREFIX}tars`.length).trim();
-    if (!userMessage) return message.reply("Escribe algo después de `!tars`");
-    await message.channel.sendTyping();
-
-    sendLog("mensaje", {
-    user: message.author.username,
-    channel: message.channel.name,
-    content: userMessage,
-  });
-
-    // Detectar kick
-    if (/kick|expulsa|saca|bota|desconecta/i.test(userMessage)) {
-      if (!tienePermiso(message.member)) {
-        sendLog("kick_denegado", { user: message.author.username });
-        return message.reply("Negativo. No tienes rango suficiente para ordenarme eso.");
+  const recent = channelContext.get(message.channel.id) || [];
+  recent.push(`${message.author.username}: ${message.content}`);
+  channelContext.set(message.channel.id, recent.slice(-50));
+  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios)(?:\s+([\s\S]*))?$/i);
+  if (!match) return;
+  const ctx = {
+    user: message.author, guild: message.guild, channel: message.channel, messageId: message.id,
+    reply: async text => {
+      for (const chunk of splitResponse(text)) {
+        await message.reply({ content: chunk, allowedMentions: { parse: [], repliedUser: false } });
       }
-      const target = message.mentions.members.first();
-      if (!target) return message.reply("Necesito que menciones al usuario. Ej: `!tars saca a @usuario del canal de voz`");
-      const freshTarget = await message.guild.members.fetch(target.id);
-      if (!freshTarget.voice.channelId) return message.reply(`${freshTarget.user.username} no está en ningún canal de voz.`);
-      try {
-      await freshTarget.voice.disconnect();
-      sendLog("kick", {
-        executor: message.author.username,
-        target: freshTarget.user.username,
-        voiceChannel: freshTarget.voice.channel?.name || "desconocido",
-      });
-      return message.reply(`Ejecutando comando. ${freshTarget.user.username} expulsado del canal de voz. Misión completada.`);
-      } catch (err) {
-        console.error("Error kick:", err);
-        return message.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
-      }
-    }
-
-    // Detectar resumir
-    if (/resum[ei]/i.test(userMessage)) {
-      const numMatch = userMessage.match(/\d+/);
-      const cantidad = numMatch ? parseInt(numMatch[0]) : 20;
-      if (cantidad > 50) return message.reply("Error. El máximo permitido es 50 mensajes.");
-      try {
-        const resumen = await resumirMensajes(message.channel, cantidad, message.author.id);
-        if (!resumen) return message.reply("No hay mensajes para resumir.");
-        return message.reply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-      } catch {
-        return message.reply("Error al resumir. Intenta de nuevo.");
-      }
-    }
-
-    // Respuesta normal de IA
-    try {
-      const serverCtx = await getServerContext(message.guild);
-      const channelCtx = getChannelContext(message.channel.id);
-      const response = await askAI(message.author.id, `${serverCtx}\n\n${channelCtx}Pregunta: ${userMessage}`);
-      sendLog("respuesta", { user: message.author.username, content: response });
-      if (response.length > 1900) {
-        const chunks = response.match(/.{1,1900}/gs);
-        for (const chunk of chunks) await message.reply(chunk);
-      } else {
-        await message.reply(response);
-      }
-    } catch (error) {
-      console.error("Error con la IA:", error);
-      sendLog("error", { user: message.author.username, error: error.message });
-      message.reply("Hubo un error. Intenta de nuevo.");
-    }
-  }
-
-  if (content.startsWith(`${PREFIX}resumir`)) {
-    const numMatch = content.match(/\d+/);
-    const cantidad = Math.min(numMatch ? parseInt(numMatch[0]) : 20, 50);
-    await message.channel.sendTyping();
-    try {
-      const resumen = await resumirMensajes(message.channel, cantidad, message.author.id);
-      if (!resumen) return message.reply("No hay mensajes para resumir.");
-      message.reply(`**Resumen de los últimos ${cantidad} mensajes:**\n${resumen}`);
-    } catch {
-      message.reply("Error al resumir. Intenta de nuevo.");
-    }
-  }
-
-  if (content.startsWith(`${PREFIX}usuarios`)) {
-    const rolNombre = content.slice(`${PREFIX}usuarios`.length).trim();
-    if (message.guild.members.cache.size < 2) await message.guild.members.fetch();
-
-    if (rolNombre) {
-      const rol = message.guild.roles.cache.find((r) => r.name.toLowerCase() === rolNombre.toLowerCase());
-      if (!rol) return message.reply(`No encontré el rol "${rolNombre}".`);
-      const miembros = rol.members.filter((m) => !m.user.bot);
-      const lista = miembros.map((m) => `- ${m.user.username}`).join("\n") || "Ninguno";
-      return message.reply(`**Usuarios con el rol "${rol.name}":**\n${lista}`);
-    }
-
-    const conectados = message.guild.members.cache.filter(
-      (m) => !m.user.bot && m.presence?.status && m.presence?.status !== "offline"
-    );
-    const lista = conectados.map((m) => `- ${m.user.username}`).join("\n") || "Nadie conectado";
-    return message.reply(`**Usuarios conectados ahora:**\n${lista}`);
-  }
+    },
+  };
+  try {
+    if (["tars", "resumir", "usuarios"].includes(match[1].toLowerCase())) await message.channel.sendTyping();
+    await execute(ctx, match[1].toLowerCase(), match[2]);
+  } catch (error) { await handleError(ctx, error); }
 });
 
-client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log("Login exitoso"))
-  .catch((err) => {
-    console.error("Error login:", err.message);
-    process.exit(1);
-  });
+process.on("unhandledRejection", error => {
+  console.error("Error no manejado:", error);
+  void sendLog("error_fatal", { error: error?.message || String(error) });
+});
+client.on("error", error => {
+  console.error("Error del cliente Discord:", error);
+  void sendLog("error_fatal", { error: error.message });
+});
 
-setTimeout(() => {
-  console.log("Estado WebSocket:", client.ws.status);
-}, 15000);
-
-// ── Login ────────────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN).catch((err) => {
-  console.error("Error al conectar con Discord:", err.message);
+keepAlive();
+client.login(process.env.DISCORD_TOKEN).catch(error => {
+  console.error("Error al conectar con Discord:", error.message);
+  process.exitCode = 1;
   process.exit(1);
 });
