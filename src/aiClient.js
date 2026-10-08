@@ -30,15 +30,17 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
   });
   let queue = Promise.resolve();
   let pending = 0;
+  let budget;
 
-  async function request(provider, messages) {
+  async function request(provider, messages, voice = false) {
     if (provider.nextRequest > now()) await wait(provider.nextRequest - now());
     provider.nextRequest = now() + spacingMs;
     const body = { model: provider.model, messages, stream: false };
     if (provider.name === 'Groq') Object.assign(body, {
-      max_completion_tokens: 2048, reasoning_effort: 'low', include_reasoning: false,
+      max_completion_tokens: voice ? 512 : 2048, reasoning_effort: 'low', include_reasoning: false,
     });
-    else body.max_tokens = 1024;
+    else body.max_tokens = voice ? 256 : 1024;
+    if (budget) await budget.reserve({ tokens: Buffer.byteLength(JSON.stringify(messages), 'utf8') + (body.max_completion_tokens || body.max_tokens) });
     try {
       const response = await fetchImpl(provider.url, {
         method: 'POST',
@@ -66,13 +68,14 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     }
   }
 
-  async function generate(messages) {
+  async function generate(messages, voice = false) {
     if (!providers.length) throw Object.assign(new Error('Faltan credenciales de IA.'), { code: 'AI_CONFIG' });
     for (const provider of providers) {
       if (provider.blockedUntil > now()) continue;
       try {
-        return await withAIRetry(() => request(provider, messages), { wait });
+        return voice ? await request(provider, messages, true) : await withAIRetry(() => request(provider, messages), { wait });
       } catch (error) {
+        if (error.code === 'AI_BUDGET' || error.cause?.code === 'AI_BUDGET') throw error.cause || error;
         const status = error.cause?.status || error.status;
         if (status !== 429) provider.blockedUntil = now() + ([400, 401, 403, 404].includes(status) ? 300000 : 30000);
         console.warn(`[IA] ${provider.name} no disponible (${status || 'conexión'}); buscando respaldo.`);
@@ -81,7 +84,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     throw unavailable();
   }
 
-  function askAI(userId, userMessage, { context = '', brief = false } = {}) {
+  function askAI(userId, userMessage, { context = '', brief = false, voice = false } = {}) {
     if (pending >= 8) return Promise.reject(Object.assign(new Error('Cola de IA llena.'), { code: 'AI_BUSY' }));
     pending++;
     const enqueued = now();
@@ -91,11 +94,12 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       const current = { userId, cleared: false };
       activeHistory = current;
       const input = clip(String(userMessage), 6000);
-      const limit = brief ? 600 : responseLimit(input);
-      const messages = [{ role: 'system', content: `${systemPrompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...history];
+      const limit = voice ? 280 : brief ? 600 : responseLimit(input);
+      const prompt = voice ? 'Eres TARS, robot con humor seco. Habla español en una o dos frases breves, sin Markdown. Solo conversas: no ejecutas acciones ni moderación. No inventes recuerdos.' : systemPrompt;
+      const messages = [{ role: 'system', content: `${prompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...(voice ? history.slice(-2) : history)];
       messages.push({ role: 'user', content: context ? `Contexto del servidor:\n${clip(context, 3000)}\n\nPregunta: ${input}` : input });
       let reply;
-      try { reply = compactResponse(await generate(messages), limit); }
+      try { reply = compactResponse(await generate(messages, voice), limit); }
       finally { activeHistory = undefined; }
       // No restaurar memoria si el usuario la borró mientras esperaba la respuesta.
       if (!current.cleared) {
@@ -117,7 +121,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     histories.delete(userId);
     if (activeHistory?.userId === userId) activeHistory.cleared = true;
   }
-  return { askAI, clearHistory };
+  return { askAI, clearHistory, setBudget: value => { budget = value; } };
 }
 
 module.exports = { createAI, retryAfter };

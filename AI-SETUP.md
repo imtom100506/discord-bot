@@ -26,8 +26,9 @@ Configura DISCORD_TOKEN, GROQ_API_KEY, CLOUDFLARE_API_TOKEN y
 CLOUDFLARE_ACCOUNT_ID en Environment, sin publicar sus valores en Git.
 Conserva LOG_CHANNEL_ID y cualquier otra variable existente del servidor.
 El servidor HTTP nativo de Node.js usa el PORT asignado por Render.
-Las dependencias de ejecución son `discord.js` y `dotenv`; `node_modules` no se
+Las dependencias de ejecución se declaran en `package.json`; `node_modules` no se
 versiona. Instálalas con `npm ci` usando el `package-lock.json` del repositorio.
+Para voz usa el runtime Docker y sigue [VOICE-SETUP.md](VOICE-SETUP.md).
 
 Render Free puede suspender el servicio tras 15 minutos sin tráfico entrante;
 los mensajes de Discord no son peticiones al endpoint HTTP de Render y no se

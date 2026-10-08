@@ -6,6 +6,23 @@ const ok = text => new Response(JSON.stringify({ choices: [{ message: { content:
 const fail = (status, headers = {}) => new Response('{}', { status, headers });
 const make = fetchImpl => createAI({ env, systemPrompt: 'TARS', fetchImpl, wait: async () => {}, spacingMs: 0 });
 
+test('shared budget blocks text and voice before any provider call', async () => {
+  let calls = 0;
+  const ai = make(async () => { calls++; return ok('ok'); });
+  ai.setBudget({ reserve: async () => { throw Object.assign(new Error('budget'), { code: 'AI_BUDGET' }); } });
+  await assert.rejects(ai.askAI('u', 'hola'), { code: 'AI_BUDGET' });
+  await assert.rejects(ai.askAI('u', 'hola', { voice: true }), { code: 'AI_BUDGET' });
+  assert.equal(calls, 0);
+});
+
+test('voice uses compact prompt and generation budget without retry storms', async () => {
+  const requests = [];
+  const ai = make(async (url, init) => { requests.push(JSON.parse(init.body)); return ok('Hola.'); });
+  await ai.askAI('u', 'hola', { voice: true });
+  assert.equal(requests[0].max_completion_tokens, 512);
+  assert.ok(requests[0].messages[0].content.length < 400);
+});
+
 test('503 retries then falls back; only successful turns enter history', async () => {
   const requests = [];
   const ai = make(async (url, init) => {

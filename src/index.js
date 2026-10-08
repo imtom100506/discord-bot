@@ -1,6 +1,6 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require("discord.js");
-const { askAI, clearHistory } = require("./ai");
+const { askAI, clearHistory, setBudget } = require("./ai");
 const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse, appendContext } = require("./commandUtils");
 const { BoundedMap } = require("./boundedMap");
@@ -8,6 +8,9 @@ const { VOICE_ROLES: ROLES_AUTORIZADOS, HELP, commandReply } = require("./botCap
 const { parseModeration, moderate } = require("./moderation");
 const { createTextMutes } = require("./textMute");
 const { createDiscordMuteStore } = require("./muteStore");
+const { createUsageBudget } = require("./usageBudget");
+const { createVoiceAudio } = require("./voiceAudio");
+const { createVoice } = require("./voice");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
@@ -21,6 +24,14 @@ const client = new Client({
 const muteStateChannel = process.env.TARS_STATE_CHANNEL_ID || process.env.LOG_CHANNEL_ID;
 const textMutes = createTextMutes({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel) : undefined });
 const channelContext = new BoundedMap(200);
+const voiceEnabled = process.env.TARS_VOICE_ENABLED === 'true';
+const budget = createUsageBudget({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
+  global.fetch, 'TARS · Presupuesto IA · No borrar', 'tars-usage.json') : undefined });
+if (voiceEnabled) setBudget(budget);
+const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }) });
+client.on('voiceStateUpdate', (oldState, newState) => voice.onVoiceState(oldState, newState));
+process.once('SIGTERM', () => { voice.leave(); client.destroy(); process.exit(0); });
+process.once('SIGINT', () => { voice.leave(); client.destroy(); process.exit(0); });
 
 async function sendLog(type, data) {
   if (!process.env.LOG_CHANNEL_ID) return;
@@ -36,6 +47,8 @@ async function sendLog(type, data) {
 }
 
 const commands = [
+  ...['entrar', 'escuchar', 'salir'].map(name => new SlashCommandBuilder().setName(name)
+    .setDescription({ entrar: 'Invita a TARS a tu canal de voz', escuchar: 'Activa una pregunta de voz de hasta 12 segundos', salir: 'Desconecta a TARS de tu canal de voz' }[name])),
   new SlashCommandBuilder().setName("tars").setDescription("Habla con TARS")
     .addStringOption(o => o.setName("mensaje").setDescription("Tu mensaje para TARS").setRequired(true)),
   new SlashCommandBuilder().setName("reset").setDescription("Borra tu historial de conversación con TARS"),
@@ -127,6 +140,7 @@ async function disconnect(ctx, text) {
 }
 
 async function execute(ctx, command, argument) {
+  if (['entrar', 'escuchar', 'salir'].includes(command)) return voice.handle(ctx, command);
   if (command === "ping") return ctx.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
   if (command === "ayuda") return ctx.reply(HELP);
   if (command === "reset") {
@@ -176,7 +190,7 @@ async function handleError(ctx, error) {
   console.error("Error ejecutando comando:", error.message);
   void sendLog("error", { usuario: ctx.user.username, error: error.cause?.message || error.message || String(error) });
   if (error.code === 10062 || error.code === 10015) return;
-  const response = error.code === "AI_UNAVAILABLE"
+  const response = error.code === 'AI_BUDGET' ? error.message : error.code === "AI_UNAVAILABLE"
     ? "Los proveedores de IA están saturados o alcanzaron su cuota gratuita. Prueba de nuevo más tarde."
     : error.code === "AI_BUSY"
     ? "Tengo varias consultas pendientes. Prueba de nuevo en un momento."
@@ -215,7 +229,7 @@ client.on("messageCreate", async message => {
   if (message.author.bot) return;
   const recent = channelContext.get(message.channel.id) || [];
   channelContext.set(message.channel.id, appendContext(recent, `${message.author.username}: ${message.content}`));
-  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios)(?:\s+([\s\S]*))?$/i);
+  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir)(?:\s+([\s\S]*))?$/i);
   if (!match) return;
   const ctx = {
     user: message.author, guild: message.guild, channel: message.channel, messageId: message.id,

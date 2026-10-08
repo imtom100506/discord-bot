@@ -2,7 +2,7 @@ const MARKER = "TARS · Registro de mutes de texto · No borrar";
 const FILE_NAME = "tars-text-mutes.json";
 
 // Un mensaje del propio bot guarda el registro. No requiere disco de pago en Render.
-function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch) {
+function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch, marker = MARKER, fileName = FILE_NAME) {
   let channel, message, lastSaved, located = false;
   async function locate() {
     if (located) return;
@@ -11,7 +11,7 @@ function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch) {
     let before;
     while (true) {
       const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
-      message = [...batch.values()].find(item => item.author.id === client.user.id && item.content === MARKER);
+      message = [...batch.values()].find(item => item.author.id === client.user.id && item.content === marker);
       if (message || batch.size < 100) break;
       before = batch.last().id;
     }
@@ -20,7 +20,7 @@ function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch) {
   async function read() {
     await locate();
     if (!message) return null;
-    const attachment = [...message.attachments.values()].find(item => item.name === FILE_NAME);
+    const attachment = [...message.attachments.values()].find(item => item.name === fileName);
     if (!attachment) throw new Error("Falta el archivo del registro de mutes; no se sobrescribirá");
     const response = await fetchImpl(attachment.url, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error("No se pudo leer el registro de mutes de Discord");
@@ -30,8 +30,8 @@ function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch) {
   async function write(data) {
     await locate();
     if (message && data === lastSaved) return;
-    const payload = { content: MARKER, attachments: [],
-      files: [{ attachment: Buffer.from(data, "utf8"), name: FILE_NAME }], allowedMentions: { parse: [] } };
+    const payload = { content: marker, attachments: [],
+      files: [{ attachment: Buffer.from(data, "utf8"), name: fileName }], allowedMentions: { parse: [] } };
     if (message) message = await message.edit(payload);
     else message = await channel.send(payload);
     lastSaved = data;
