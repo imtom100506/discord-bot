@@ -11,7 +11,7 @@ las llamadas pueden facturarse: el código no puede verificar tu plan.
 
 ## Activación
 
-1. Añade GROQ_API_KEY a .env (ya existe una clave local).
+1. Copia `.env.example` a `.env` si hace falta y configura `DISCORD_TOKEN` y `GROQ_API_KEY`.
 2. En https://dash.cloudflare.com abre Workers AI > Use REST API.
 3. Crea un token limitado a Workers AI de la cuenta y copia su Account ID.
 4. Guarda CLOUDFLARE_API_TOKEN y CLOUDFLARE_ACCOUNT_ID en .env.
@@ -25,7 +25,9 @@ Start: `npm start`. Node 24 se configura mediante `.node-version`.
 Configura DISCORD_TOKEN, GROQ_API_KEY, CLOUDFLARE_API_TOKEN y
 CLOUDFLARE_ACCOUNT_ID en Environment, sin publicar sus valores en Git.
 Conserva LOG_CHANNEL_ID y cualquier otra variable existente del servidor.
-El servidor HTTP usa el PORT asignado por Render.
+El servidor HTTP nativo de Node.js usa el PORT asignado por Render.
+Las dependencias de ejecución son `discord.js` y `dotenv`; `node_modules` no se
+versiona. Instálalas con `npm ci` usando el `package-lock.json` del repositorio.
 
 Render Free puede suspender el servicio tras 15 minutos sin tráfico entrante;
 los mensajes de Discord no son peticiones al endpoint HTTP de Render y no se
@@ -89,10 +91,8 @@ Puedes cambiar esa carpeta con `TARS_DATA_DIR`; debe estar en almacenamiento
 persistente. En Render usa el canal de Discord: perder el archivo local impediría
 restaurar automáticamente permisos y vencimientos.
 
-Los timeout aplicados por la versión anterior siguen activos hasta vencer.
-Retíralos manualmente desde Discord para liberar también la voz; los comandos
-nuevos nunca cambian un timeout preexistente. Si detectan uno, indican retirarlo
-antes de aplicar el mute de texto.
+Si el miembro tiene un timeout de Discord activo, retíralo manualmente antes
+de aplicar el mute de texto. TARS detecta esa condición e indica cómo continuar.
 
 Referencia: [Permisos de canales e hilos de Discord](https://github.com/discord/discord-api-docs/blob/main/developers/topics/permissions.mdx).
 
@@ -115,7 +115,10 @@ Referencia: [Permisos de canales e hilos de Discord](https://github.com/discord/
 - Ante 429 cambia al respaldo; respeta Retry-After antes de volver a ese proveedor.
   Sin cabecera, espera al menos un minuto. No insiste inmediatamente en cuota agotada.
 - Errores de autenticación/modelo no se reintentan; el respaldo puede responder.
-- Historial: hasta ocho mensajes y 4.000 caracteres, solo turnos exitosos.
+- Historial: hasta ocho mensajes y 4.000 caracteres por usuario, solo turnos exitosos.
+  Se conservan como máximo 500 usuarios, priorizando los usados recientemente.
+  El contexto de canal conserva hasta 50 mensajes y 4.000 caracteres por canal,
+  con un máximo de 200 canales recientes.
   El contexto del servidor se envía una vez por petición y no se guarda en historial.
 - Entradas superiores a 6.000 caracteres y contexto superior a 3.000 se recortan
   conservando inicio y final. Esto puede omitir material en resúmenes largos.
@@ -125,5 +128,6 @@ Referencia: [Permisos de canales e hilos de Discord](https://github.com/discord/
   mantenerse bajo todas las cuotas. Se conserva el manejo de errores 429.
 
 No se garantiza disponibilidad continua ni gratuidad perpetua del proveedor.
+Las novedades del proyecto están en [CHANGELOG.md](CHANGELOG.md).
 Fuentes: https://console.groq.com/docs/rate-limits y
 https://developers.cloudflare.com/workers-ai/platform/pricing/

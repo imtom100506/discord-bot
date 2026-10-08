@@ -36,17 +36,24 @@ function createTextMutes({ file = path.join(process.env.TARS_DATA_DIR || path.jo
     await storage.writeFile(file + ".tmp", JSON.stringify({ version: 1, records }), "utf8");
     await storage.rename(file + ".tmp", file);
   }
+  function snapshotChannel(record, channel) {
+    if (record.channels.some(item => item.id === channel.id)) return false;
+    const overwrite = channel.permissionOverwrites.cache.get(record.userId);
+    record.channels.push({ id: channel.id, existed: !!overwrite, permissions: Object.fromEntries(TEXT_PERMISSIONS.map(name =>
+      [name, overwrite?.allow.has(P[name]) ? true : overwrite?.deny.has(P[name]) ? false : null])) });
+    return true;
+  }
   async function restrict(record, channel, me, reason) {
     if (!channel.permissionsFor(me)?.has(P.ManageRoles)) throw Object.assign(new Error("Falta Gestionar permisos en un canal"), { code: 50013 });
-    let snapshot = record.channels.find(item => item.id === channel.id);
-    if (!snapshot) {
-      const overwrite = channel.permissionOverwrites.cache.get(record.userId);
-      snapshot = { id: channel.id, existed: !!overwrite, permissions: Object.fromEntries(TEXT_PERMISSIONS.map(name =>
-        [name, overwrite?.allow.has(P[name]) ? true : overwrite?.deny.has(P[name]) ? false : null])) };
-      record.channels.push(snapshot);
-      // Guardar ANTES de modificar Discord, para recuperar incluso tras un reinicio.
-      await save();
+    if (snapshotChannel(record, channel)) {
+      try { await save(); }
+      catch (error) {
+        record.channels = record.channels.filter(item => item.id !== channel.id);
+        throw error;
+      }
     }
+    const overwrite = channel.permissionOverwrites.cache.get(record.userId);
+    if (TEXT_PERMISSIONS.every(name => overwrite?.deny.has(P[name]))) return;
     await channel.permissionOverwrites.edit(record.userId, denied, { type: 1, reason });
   }
   async function restore(record, guild, reason) {
@@ -61,13 +68,15 @@ function createTextMutes({ file = path.join(process.env.TARS_DATA_DIR || path.jo
         const overwrite = channel.permissionOverwrites.cache.get(record.userId);
         if (overwrite) {
           // Restaurar solo bits que todavía tienen el valor impuesto por TARS.
-          const permissions = Object.fromEntries(TEXT_PERMISSIONS.filter(name => overwrite.deny.has(P[name]))
+          const permissions = Object.fromEntries(TEXT_PERMISSIONS.filter(name => overwrite.deny.has(P[name]) && snapshot.permissions[name] !== false)
             .map(name => [name, snapshot.permissions[name]]));
           if (Object.keys(permissions).length) await channel.permissionOverwrites.edit(record.userId, permissions, { type: 1, reason });
-          const refreshed = await guild.channels.fetch(snapshot.id, { force: true });
-          const remaining = refreshed.permissionOverwrites.cache.get(record.userId);
-          if (!snapshot.existed && remaining && remaining.allow.bitfield === 0n && remaining.deny.bitfield === 0n) {
-            await channel.permissionOverwrites.delete(record.userId, reason);
+          if (!snapshot.existed) {
+            const refreshed = Object.keys(permissions).length ? await guild.channels.fetch(snapshot.id, { force: true }) : channel;
+            const remaining = refreshed?.permissionOverwrites.cache.get(record.userId);
+            if (remaining && remaining.allow.bitfield === 0n && remaining.deny.bitfield === 0n) {
+              await channel.permissionOverwrites.delete(record.userId, reason);
+            }
           }
         }
       }
@@ -93,6 +102,8 @@ function createTextMutes({ file = path.join(process.env.TARS_DATA_DIR || path.jo
         record = { guildId: guild.id, userId, expiresAt: now() + duration, channels: [], restoring: false };
         records.push(record);
       } else record.expiresAt = now() + duration;
+      // Una sola escritura guarda TODOS los originales antes de tocar Discord.
+      for (const channel of channels) snapshotChannel(record, channel);
       await save();
       try {
         for (const channel of channels) await restrict(record, channel, me, reason);
@@ -132,12 +143,10 @@ function createTextMutes({ file = path.join(process.env.TARS_DATA_DIR || path.jo
     if (!supportsTextMute(channel)) return;
     return serial(async () => {
       await load();
+      const active = records.filter(record => record.guildId === channel.guild.id && !record.restoring && record.expiresAt > now());
+      if (!active.length) return;
       const me = await channel.guild.members.fetchMe();
-      for (const record of records) {
-        if (record.guildId === channel.guild.id && !record.restoring && record.expiresAt > now()) {
-          await restrict(record, channel, me, "Mantener mute de texto de TARS");
-        }
-      }
+      for (const record of active) await restrict(record, channel, me, "Mantener mute de texto de TARS");
     });
   }
   async function syncGuild(guild) {

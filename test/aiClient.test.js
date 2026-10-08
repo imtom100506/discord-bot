@@ -116,3 +116,17 @@ test('both providers bound replies and remember only the delivered text', async 
     assert.ok((await ai.askAI('u', 'Resume: usuario pide explicar paso a paso', { brief: true })).length <= 600);
   }
 });
+
+test('AI evicts old users without clearing recently used histories', async () => {
+  const payloads = [];
+  const ai = createAI({ env, maxHistories: 2, systemPrompt: 'TARS', spacingMs: 0,
+    fetchImpl: async (url, init) => { payloads.push(JSON.parse(init.body)); return ok('ok'); } });
+  await ai.askAI('a', 'primero');
+  await ai.askAI('b', 'segundo');
+  await ai.askAI('a', 'reciente');
+  await ai.askAI('c', 'nuevo');
+  await ai.askAI('a', 'conservar');
+  assert.equal(payloads.at(-1).messages[1].content, 'primero');
+  await ai.askAI('b', 'sin historial');
+  assert.equal(payloads.at(-1).messages.length, 2);
+});

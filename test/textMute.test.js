@@ -134,3 +134,21 @@ test("unwritable storage or corrupt state prevents Discord mutations", async () 
   await assert.rejects(f.service().mute(f.guild, "u", 1000, "test"));
   assert.equal(f.edits.length, 0);
 });
+
+test("mute journals all channels in one write and avoids redundant permission updates", async () => {
+  const f = fixture();
+  for (let i = 0; i < 10; i++) f.addChannel(String(i));
+  let writes = 0;
+  const write = f.storage.writeFile;
+  f.storage.writeFile = async (...args) => { writes++; return write(...args); };
+  const service = f.service();
+  await service.mute(f.guild, "u", 10000, "test");
+  assert.equal(writes, 1);
+  assert.equal(f.edits.length, 10);
+  const saved = JSON.parse(f.files.get("state.json"));
+  assert.equal(saved.records[0].channels.length, 10);
+  await service.syncGuild(f.guild);
+  await service.mute(f.guild, "u", 20000, "extend");
+  assert.equal(f.edits.length, 10);
+  assert.equal(writes, 2);
+});

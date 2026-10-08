@@ -3,7 +3,7 @@ const FILE_NAME = "tars-text-mutes.json";
 
 // Un mensaje del propio bot guarda el registro. No requiere disco de pago en Render.
 function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch) {
-  let channel, message, located = false;
+  let channel, message, lastSaved, located = false;
   async function locate() {
     if (located) return;
     channel = await client.channels.fetch(channelId);
@@ -24,14 +24,17 @@ function createDiscordMuteStore(client, channelId, fetchImpl = global.fetch) {
     if (!attachment) throw new Error("Falta el archivo del registro de mutes; no se sobrescribirá");
     const response = await fetchImpl(attachment.url, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error("No se pudo leer el registro de mutes de Discord");
-    return response.text();
+    lastSaved = await response.text();
+    return lastSaved;
   }
   async function write(data) {
     await locate();
+    if (message && data === lastSaved) return;
     const payload = { content: MARKER, attachments: [],
       files: [{ attachment: Buffer.from(data, "utf8"), name: FILE_NAME }], allowedMentions: { parse: [] } };
     if (message) message = await message.edit(payload);
     else message = await channel.send(payload);
+    lastSaved = data;
   }
   return { read, write };
 }

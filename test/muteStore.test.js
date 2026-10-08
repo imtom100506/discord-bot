@@ -23,6 +23,7 @@ test("Discord state survives process restart and ignores other authors' fake rec
   assert.equal(await store.read(), null);
   await store.write('{"version":1,"records":[]}');
   await store.write('{"version":1,"records":[{"userId":"u"}]}');
+  await store.write('{"version":1,"records":[{"userId":"u"}]}');
   const restarted = createDiscordMuteStore(client, "logs", download);
   assert.equal(await restarted.read(), body);
   await restarted.write('{"version":1,"records":[]}');

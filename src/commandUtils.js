@@ -20,17 +20,24 @@ function mentionedUserId(text) {
 }
 
 function splitResponse(text, limit = 1900) {
+  if (!Number.isInteger(limit) || limit < 2) throw new RangeError("El límite debe ser al menos 2");
+  const value = String(text);
   const chunks = [];
-  let chunk = "";
-  for (const character of String(text)) {
-    if (chunk.length + character.length > limit) {
-      chunks.push(chunk);
-      chunk = "";
-    }
-    chunk += character;
+  for (let start = 0; start < value.length;) {
+    let end = Math.min(start + limit, value.length);
+    // No separar los dos componentes UTF-16 de un emoji.
+    if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1]) && /[\uDC00-\uDFFF]/.test(value[end])) end--;
+    chunks.push(value.slice(start, end));
+    start = end;
   }
-  if (chunk) chunks.push(chunk);
   return chunks.length ? chunks : ["No recibí una respuesta. Intenta de nuevo."];
 }
 
-module.exports = { summaryCount, countFromText, mentionedUserId, splitResponse };
+function appendContext(history, line, maxCharacters = 4000) {
+  history.push(String(line).slice(-maxCharacters));
+  let characters = history.reduce((sum, item) => sum + item.length + 1, -1);
+  while (history.length > 50 || characters > maxCharacters) characters -= history.shift().length + 1;
+  return history;
+}
+
+module.exports = { summaryCount, countFromText, mentionedUserId, splitResponse, appendContext };

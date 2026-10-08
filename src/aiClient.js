@@ -1,8 +1,10 @@
 const { setTimeout: sleep } = require('node:timers/promises');
 const { withAIRetry } = require('./aiRetry');
 const { responseLimit, compactResponse } = require('./responsePolicy');
+const { BoundedMap } = require('./boundedMap');
 
 const unavailable = () => Object.assign(new Error('Los proveedores de IA no están disponibles.'), { code: 'AI_UNAVAILABLE' });
+const clip = (text, max) => text.length <= max ? text : `${text.slice(0, max / 2)}\n[Contenido recortado]\n${text.slice(-max / 2)}`;
 
 function retryAfter(value, now) {
   if (!value) return 60000;
@@ -12,9 +14,9 @@ function retryAfter(value, now) {
 }
 
 function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
-  wait = sleep, now = Date.now, spacingMs = 10000 } = {}) {
-  const histories = new Map();
-  const revisions = new Map();
+  wait = sleep, now = Date.now, spacingMs = 10000, maxHistories = 500 } = {}) {
+  const histories = new BoundedMap(maxHistories);
+  let activeHistory;
   const providers = [];
   if (env.GROQ_API_KEY) providers.push({
     name: 'Groq', key: env.GROQ_API_KEY,
@@ -37,9 +39,8 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       max_completion_tokens: 2048, reasoning_effort: 'low', include_reasoning: false,
     });
     else body.max_tokens = 1024;
-    let response;
     try {
-      response = await fetchImpl(provider.url, {
+      const response = await fetchImpl(provider.url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal: AbortSignal.timeout(20000),
@@ -87,18 +88,23 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     const task = queue.then(async () => {
       if (now() - enqueued > 90000) throw Object.assign(new Error('La cola de IA tardó demasiado.'), { code: 'AI_BUSY' });
       const history = histories.get(userId) || [];
-      const revision = revisions.get(userId) || 0;
-      // Conserva ambos extremos para no perder la pregunta al final de un contexto largo.
-      const clip = (text, max) => text.length <= max ? text : `${text.slice(0, max / 2)}\n[Contenido recortado]\n${text.slice(-max / 2)}`;
+      const current = { userId, cleared: false };
+      activeHistory = current;
       const input = clip(String(userMessage), 6000);
       const limit = brief ? 600 : responseLimit(input);
       const messages = [{ role: 'system', content: `${systemPrompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...history];
       messages.push({ role: 'user', content: context ? `Contexto del servidor:\n${clip(context, 3000)}\n\nPregunta: ${input}` : input });
-      const reply = compactResponse(await generate(messages), limit);
+      let reply;
+      try { reply = compactResponse(await generate(messages), limit); }
+      finally { activeHistory = undefined; }
       // No restaurar memoria si el usuario la borró mientras esperaba la respuesta.
-      if ((revisions.get(userId) || 0) === revision) {
+      if (!current.cleared) {
         const updated = [...history, { role: 'user', content: input }, { role: 'assistant', content: reply }];
-        while (updated.length > 8 || updated.reduce((sum, msg) => sum + msg.content.length, 0) > 4000) updated.splice(0, 2);
+        let characters = updated.reduce((sum, msg) => sum + msg.content.length, 0);
+        while (updated.length > 8 || characters > 4000) {
+          characters -= updated[0].content.length + updated[1].content.length;
+          updated.splice(0, 2);
+        }
         histories.set(userId, updated);
       }
       return reply;
@@ -109,7 +115,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
 
   function clearHistory(userId) {
     histories.delete(userId);
-    revisions.set(userId, (revisions.get(userId) || 0) + 1);
+    if (activeHistory?.userId === userId) activeHistory.cleared = true;
   }
   return { askAI, clearHistory };
 }

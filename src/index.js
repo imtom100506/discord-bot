@@ -2,7 +2,8 @@ require("dotenv").config();
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require("discord.js");
 const { askAI, clearHistory } = require("./ai");
 const keepAlive = require("./keepAlive");
-const { summaryCount, countFromText, mentionedUserId, splitResponse } = require("./commandUtils");
+const { summaryCount, countFromText, mentionedUserId, splitResponse, appendContext } = require("./commandUtils");
+const { BoundedMap } = require("./boundedMap");
 const { VOICE_ROLES: ROLES_AUTORIZADOS, HELP, commandReply } = require("./botCapabilities");
 const { parseModeration, moderate } = require("./moderation");
 const { createTextMutes } = require("./textMute");
@@ -19,7 +20,7 @@ const client = new Client({
 });
 const muteStateChannel = process.env.TARS_STATE_CHANNEL_ID || process.env.LOG_CHANNEL_ID;
 const textMutes = createTextMutes({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel) : undefined });
-const channelContext = new Map();
+const channelContext = new BoundedMap(200);
 
 async function sendLog(type, data) {
   if (!process.env.LOG_CHANNEL_ID) return;
@@ -67,9 +68,8 @@ client.once("ready", async () => {
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log("Slash commands registrados");
   } catch (error) {
-    console.error("Error registrando comandos:", error);
+    console.error("Error registrando comandos:", error.message);
   }
 });
 
@@ -79,11 +79,15 @@ client.on("channelCreate", channel => {
   });
 });
 
-async function getServerContext(guild) {
+function getServerContext(guild) {
   if (!guild) return "Conversación por mensaje privado.";
-  const members = guild.members.cache.filter(member => !member.user.bot);
-  const online = members.filter(member => member.presence?.status && member.presence.status !== "offline");
-  return `Contexto del servidor "${guild.name}": ${members.size} miembros humanos en caché, ${online.size} conectados observados.`;
+  let members = 0, online = 0;
+  for (const member of guild.members.cache.values()) {
+    if (member.user.bot) continue;
+    members++;
+    if (member.presence?.status && member.presence.status !== "offline") online++;
+  }
+  return `Contexto del servidor "${guild.name}": ${members} miembros humanos en caché, ${online} conectados observados.`;
 }
 
 async function summarize(ctx, count) {
@@ -114,7 +118,7 @@ async function disconnect(ctx, text) {
   try {
     await target.voice.disconnect(`Solicitado por ${ctx.user.username} (${ctx.user.id})`);
   } catch (error) {
-    console.error("Error kick:", error);
+    console.error("Error desconectando de voz:", error.message);
     void sendLog("error", { comando: "kick", usuario: ctx.user.username, error: error.message });
     return ctx.reply("Error en la operación. Verifica que tengo el permiso 'Mover miembros'.");
   }
@@ -159,7 +163,7 @@ async function execute(ctx, command, argument) {
   }
   if (!text) return ctx.reply("Escribe algo después de `!tars`");
   void sendLog("mensaje", { usuario: ctx.user.username, canal: ctx.channel.name || "privado", mensaje: text });
-  const serverContext = await getServerContext(ctx.guild);
+  const serverContext = getServerContext(ctx.guild);
   const recent = channelContext.get(ctx.channel.id) || [];
   const response = await askAI(ctx.user.id, text, {
     context: `${serverContext}\nUsuario que pregunta: ${ctx.user.username} (${ctx.user.id}).\n\nContexto reciente del canal:\n${recent.join("\n")}`,
@@ -169,7 +173,7 @@ async function execute(ctx, command, argument) {
 }
 
 async function handleError(ctx, error) {
-  console.error("Error ejecutando comando:", error);
+  console.error("Error ejecutando comando:", error.message);
   void sendLog("error", { usuario: ctx.user.username, error: error.cause?.message || error.message || String(error) });
   if (error.code === 10062 || error.code === 10015) return;
   const response = error.code === "AI_UNAVAILABLE"
@@ -210,8 +214,7 @@ client.on("interactionCreate", async interaction => {
 client.on("messageCreate", async message => {
   if (message.author.bot) return;
   const recent = channelContext.get(message.channel.id) || [];
-  recent.push(`${message.author.username}: ${message.content}`);
-  channelContext.set(message.channel.id, recent.slice(-50));
+  channelContext.set(message.channel.id, appendContext(recent, `${message.author.username}: ${message.content}`));
   const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios)(?:\s+([\s\S]*))?$/i);
   if (!match) return;
   const ctx = {
@@ -229,17 +232,16 @@ client.on("messageCreate", async message => {
 });
 
 process.on("unhandledRejection", error => {
-  console.error("Error no manejado:", error);
+  console.error("Error no manejado:", error?.message || String(error));
   void sendLog("error_fatal", { error: error?.message || String(error) });
 });
 client.on("error", error => {
-  console.error("Error del cliente Discord:", error);
+  console.error("Error del cliente Discord:", error.message);
   void sendLog("error_fatal", { error: error.message });
 });
 
 keepAlive();
 client.login(process.env.DISCORD_TOKEN).catch(error => {
   console.error("Error al conectar con Discord:", error.message);
-  process.exitCode = 1;
   process.exit(1);
 });
