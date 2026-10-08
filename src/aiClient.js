@@ -1,5 +1,6 @@
 const { setTimeout: sleep } = require('node:timers/promises');
 const { withAIRetry } = require('./aiRetry');
+const { responseLimit, compactResponse } = require('./responsePolicy');
 
 const unavailable = () => Object.assign(new Error('Los proveedores de IA no están disponibles.'), { code: 'AI_UNAVAILABLE' });
 
@@ -79,7 +80,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     throw unavailable();
   }
 
-  function askAI(userId, userMessage, { context = '' } = {}) {
+  function askAI(userId, userMessage, { context = '', brief = false } = {}) {
     if (pending >= 8) return Promise.reject(Object.assign(new Error('Cola de IA llena.'), { code: 'AI_BUSY' }));
     pending++;
     const enqueued = now();
@@ -90,9 +91,10 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       // Conserva ambos extremos para no perder la pregunta al final de un contexto largo.
       const clip = (text, max) => text.length <= max ? text : `${text.slice(0, max / 2)}\n[Contenido recortado]\n${text.slice(-max / 2)}`;
       const input = clip(String(userMessage), 6000);
-      const messages = [{ role: 'system', content: systemPrompt }, ...history];
+      const limit = brief ? 600 : responseLimit(input);
+      const messages = [{ role: 'system', content: `${systemPrompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...history];
       messages.push({ role: 'user', content: context ? `Contexto del servidor:\n${clip(context, 3000)}\n\nPregunta: ${input}` : input });
-      const reply = await generate(messages);
+      const reply = compactResponse(await generate(messages), limit);
       // No restaurar memoria si el usuario la borró mientras esperaba la respuesta.
       if ((revisions.get(userId) || 0) === revision) {
         const updated = [...history, { role: 'user', content: input }, { role: 'assistant', content: reply }];

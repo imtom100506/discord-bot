@@ -41,6 +41,7 @@ function bot() {
       if (name === "./ai") return { clearHistory() {}, askAI: async (...args) => { aiCalls.push(args); return "x".repeat(4200); } };
       if (name === "./keepAlive") return () => {};
       if (name === "./commandUtils") return utils;
+      if (name === "./botCapabilities") return require("../src/botCapabilities");
       throw new Error(name);
     },
     process: { env: {}, on() {}, exit() { throw new Error("Unexpected exit"); } }, console,
@@ -110,4 +111,25 @@ test("voice disconnect checks role and never resolves a target by username", asy
   await handler(interaction("tars", "saca a <@123>", guild));
   assert.equal(disconnects, 1);
   assert.deepEqual(fetched, ["1", "1", "1", "123"]);
+});
+
+test("command questions and invented commands bypass AI and moderation", async () => {
+  const { client, aiCalls } = bot();
+  const slash = client.listeners("interactionCreate")[0];
+  for (const text of ["help", "commands", "dime todos tus comandos", "qué comandos de admin como kick puedes usar"] ) {
+    const request = interaction("tars", text, {});
+    await slash(request);
+    assert.match(request.replies[0].content, /!resumir/);
+    assert.match(request.replies[0].content, /Líder Supremo o Sigma/);
+    assert.doesNotMatch(request.replies[0].content, /!tars ban/);
+  }
+  for (const text of ["analyst on", "detalle", "re‑load", "credit", "limit 2", "time @tom", "role add <@123> OG", "mute <@123> 30m", "purge 20", "voicekick <@123>", "play Interstellar", "/play Interstellar"]) {
+    const replies = [];
+    await client.listeners("messageCreate")[0]({
+      content: `!tars ${text}`, author: { id: "1", username: "tester" }, guild: {},
+      channel: { id: "2", sendTyping: async () => {} }, reply: async payload => replies.push(payload),
+    });
+    assert.match(replies[0].content, /no existe en TARS/);
+  }
+  assert.equal(aiCalls.length, 0);
 });

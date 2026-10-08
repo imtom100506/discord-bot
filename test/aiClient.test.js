@@ -96,3 +96,23 @@ test('history and input are bounded and failed turns never get saved', async () 
   assert.ok(payloads.at(-1).messages.at(-1).content.endsWith('FINAL'));
   assert.ok(payloads.at(-1).messages.at(-1).content.length < 6100);
 });
+
+test('both providers bound replies and remember only the delivered text', async () => {
+  for (const fallback of [false, true]) {
+    const payloads = [];
+    const ai = make(async (url, init) => {
+      payloads.push(JSON.parse(init.body));
+      if (fallback && url.includes('groq.com')) return fail(401);
+      return ok('Esta es una frase completa. '.repeat(100));
+    });
+    const short = await ai.askAI('u', 'hola');
+    assert.ok(short.length <= 600);
+    assert.ok(short.endsWith('.'));
+    const detailed = await ai.askAI('u', 'explica paso a paso');
+    assert.ok(detailed.length > 600 && detailed.length <= 1500);
+    assert.equal(payloads.at(-1).messages[2].content, short);
+    assert.match(payloads.at(-1).messages[0].content, /1500 caracteres/);
+    assert.ok((await ai.askAI('u', 'gracias')).length <= 600);
+    assert.ok((await ai.askAI('u', 'Resume: usuario pide explicar paso a paso', { brief: true })).length <= 600);
+  }
+});

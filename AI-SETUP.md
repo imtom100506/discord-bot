@@ -35,6 +35,17 @@ No ejecutes simultáneamente otra copia local con el mismo token de Discord.
 
 ## Límites de ejecución
 
+- Respuestas normales: 1–3 frases, hasta 600 caracteres. Una petición explícita
+  de detalle o paso a paso permite hasta 1.500; los resúmenes conservan 600.
+  Si la IA excede el límite, se conserva hasta una frase completa o se indica
+  el recorte con puntos suspensivos. El historial guarda solo el texto enviado.
+- La ayuda y las capacidades que recibe la IA se comparten en
+  `src/botCapabilities.js`. Las consultas habituales de comandos y los comandos
+  ficticios conocidos se contestan directamente, sin consultar al modelo.
+  Los ajustes de personalidad no crean comandos ni funciones administrativas.
+- Los logs de Discord muestran solo los primeros 400 caracteres de cada campo;
+  una respuesta cortada en el log no implica que así se haya enviado al usuario.
+
 - Cola global, una consulta a la vez, hasta ocho consultas y 90 segundos
   máximos de espera antes de empezar. Separación de 10 segundos por proveedor.
 - Timeout de 20 segundos por intento, hasta dos reintentos en errores temporales.

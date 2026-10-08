@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder }
 const { askAI, clearHistory } = require("./ai");
 const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse } = require("./commandUtils");
+const { VOICE_ROLES: ROLES_AUTORIZADOS, HELP, commandReply } = require("./botCapabilities");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
@@ -13,14 +14,6 @@ const client = new Client({
   rest: { timeout: 60000 },
   allowedMentions: { parse: [], repliedUser: false },
 });
-const ROLES_AUTORIZADOS = ["Líder Supremo", "Sigma"];
-const HELP = "**Comandos disponibles:**\n" +
-  "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
-  "`!reset` o `/reset` — Borra tu historial\n" +
-  "`!ping` o `/ping` — Latencia\n" +
-  "`!resumir <cantidad>` o `/resumir` — Resume entre 1 y 50 mensajes\n" +
-  "`!usuarios <rol>` o `/usuarios` — Ver usuarios conectados o por rol\n" +
-  "`!tars saca a @usuario del canal de voz` — Desconecta de voz (Líder Supremo o Sigma)";
 const channelContext = new Map();
 
 async function sendLog(type, data) {
@@ -73,7 +66,7 @@ async function summarize(ctx, count) {
   const history = selected.map(message => `${message.author.username}: ${message.content}`).join("\n");
   if (!history) return ctx.reply("No hay mensajes para resumir.");
   void sendLog("resumir", { usuario: ctx.user.username, canal: ctx.channel.name, cantidad: selected.length });
-  const response = await askAI(ctx.user.id, `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${history}`);
+  const response = await askAI(ctx.user.id, `Resume estos mensajes del chat de Discord de forma breve y clara:\n\n${history}`, { brief: true });
   await ctx.reply(`**Resumen de ${selected.length} mensajes:**\n${response}`);
 }
 
@@ -112,6 +105,8 @@ async function execute(ctx, command, argument) {
     return ctx.reply("Historial borrado. Empezamos de cero.");
   }
   const text = String(argument ?? "").trim();
+  const directReply = command === "tars" ? commandReply(text) : null;
+  if (directReply) return ctx.reply(directReply);
   const isKick = command === "tars" && /\b(kick|expulsa|saca|bota|desconecta)\b/i.test(text);
   const isSummary = command === "resumir" || (command === "tars" && /\bresum(?:e|ir)\b/i.test(text));
   if (!ctx.guild && (command === "usuarios" || isKick || isSummary)) {
@@ -139,7 +134,7 @@ async function execute(ctx, command, argument) {
   const serverContext = await getServerContext(ctx.guild);
   const recent = channelContext.get(ctx.channel.id) || [];
   const response = await askAI(ctx.user.id, text, {
-    context: `${serverContext}\n\nContexto reciente del canal:\n${recent.join("\n")}`,
+    context: `${serverContext}\nUsuario que pregunta: ${ctx.user.username} (${ctx.user.id}).\n\nContexto reciente del canal:\n${recent.join("\n")}`,
   });
   void sendLog("respuesta", { usuario: ctx.user.username, respuesta: response });
   await ctx.reply(response);
