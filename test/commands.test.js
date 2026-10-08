@@ -42,6 +42,7 @@ function bot() {
       if (name === "./keepAlive") return () => {};
       if (name === "./commandUtils") return utils;
       if (name === "./botCapabilities") return require("../src/botCapabilities");
+      if (name === "./moderation") return require("../src/moderation");
       throw new Error(name);
     },
     process: { env: {}, on() {}, exit() { throw new Error("Unexpected exit"); } }, console,
@@ -123,7 +124,7 @@ test("command questions and invented commands bypass AI and moderation", async (
     assert.match(request.replies[0].content, /Líder Supremo o Sigma/);
     assert.doesNotMatch(request.replies[0].content, /!tars ban/);
   }
-  for (const text of ["analyst on", "detalle", "re‑load", "credit", "limit 2", "time @tom", "role add <@123> OG", "mute <@123> 30m", "purge 20", "voicekick <@123>", "play Interstellar", "/play Interstellar"]) {
+  for (const text of ["analyst on", "detalle", "re‑load", "credit", "limit 2", "time @tom", "role add <@123> OG", "purge 20", "voicekick <@123>", "play Interstellar", "/play Interstellar"]) {
     const replies = [];
     await client.listeners("messageCreate")[0]({
       content: `!tars ${text}`, author: { id: "1", username: "tester" }, guild: {},
@@ -131,5 +132,34 @@ test("command questions and invented commands bypass AI and moderation", async (
     });
     assert.match(replies[0].content, /no existe en TARS/);
   }
+  assert.equal(aiCalls.length, 0);
+});
+
+test("prefix and slash moderation bypass AI even with command words in the nickname", async () => {
+  const { client, aiCalls } = bot();
+  const calls = [];
+  const guild = { ownerId: "owner", members: {
+    fetch: async ({ user }) => user === "1" ? {
+      roles: { cache: { some: predicate => predicate({ name: "Sigma" }) }, highest: { comparePositionTo: () => 1 } },
+      permissions: { has: () => true },
+    } : {
+      id: "123", user: { bot: false }, roles: { highest: {} }, manageable: true, moderatable: true,
+      timeout: async duration => calls.push(duration), setNickname: async name => calls.push(name),
+    },
+    fetchMe: async () => ({ permissions: { has: () => true } }),
+  } };
+  const request = interaction("tars", "mutea a <@123> por 10 minutos", guild);
+  await client.listeners("interactionCreate")[0](request);
+  assert.match(request.replies[0].content, /Silenciado/);
+  const replies = [];
+  await client.listeners("messageCreate")[0]({
+    content: "!tars cambia el apodo de <@123> a saca resume comandos", author: { id: "1", username: "tester" }, guild,
+    channel: { id: "2", sendTyping: async () => {} }, reply: async payload => replies.push(payload),
+  });
+  assert.deepEqual(calls, [600000, "saca resume comandos"]);
+  assert.match(replies[0].content, /Apodo actualizado/);
+  const dm = interaction("tars", "mutea a <@123> por 10 minutos");
+  await client.listeners("interactionCreate")[0](dm);
+  assert.match(dm.replies[0].content, /solo está disponible/);
   assert.equal(aiCalls.length, 0);
 });

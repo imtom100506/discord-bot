@@ -4,6 +4,7 @@ const { askAI, clearHistory } = require("./ai");
 const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse } = require("./commandUtils");
 const { VOICE_ROLES: ROLES_AUTORIZADOS, HELP, commandReply } = require("./botCapabilities");
+const { parseModeration, moderate } = require("./moderation");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
@@ -105,6 +106,8 @@ async function execute(ctx, command, argument) {
     return ctx.reply("Historial borrado. Empezamos de cero.");
   }
   const text = String(argument ?? "").trim();
+  const moderation = command === "tars" ? parseModeration(text) : null;
+  if (moderation) return moderate(ctx, moderation, sendLog);
   const directReply = command === "tars" ? commandReply(text) : null;
   if (directReply) return ctx.reply(directReply);
   const isKick = command === "tars" && /\b(kick|expulsa|saca|bota|desconecta)\b/i.test(text);

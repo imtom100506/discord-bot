@@ -33,6 +33,39 @@ debe asumir que lo despertarán. Abre la URL del servicio para reactivarlo.
 El alojamiento gratuito no garantiza que el bot esté disponible las 24 horas.
 No ejecutes simultáneamente otra copia local con el mismo token de Discord.
 
+## Moderación: apodos y timeout
+
+Usa una mención real de Discord en lugar de escribir el nombre a mano:
+
+```text
+!tars cambia el apodo de @usuario a Nuevo apodo
+!tars quita el apodo de @usuario
+!tars mutea a @usuario por 10 minutos
+!tars mutea a @usuario por 24 horas
+!tars desmutea a @usuario
+```
+
+También funcionan en el campo `mensaje` de `/tars`, sin escribir `!tars`.
+Se aceptan `mute`, `silencia`, `unmute` y `apodo @usuario Nuevo apodo`.
+Las duraciones son enteras: segundos, minutos, horas o días (`s`, `m`, `h`, `d`),
+entre 1 segundo y 28 días. El timeout restringe comunicación en el servidor,
+no solo el micrófono; Discord lo retira al vencer aunque el bot esté apagado.
+Los apodos admiten de 1 a 32 caracteres; no cambian el nombre global de la cuenta.
+
+Para estas funciones, el solicitante necesita `Líder Supremo` o `Sigma` y el
+permiso `Moderar miembros` (timeout) o `Gestionar apodos` (apodos). TARS también
+necesita ese permiso. El objetivo debe tener un rol inferior al del solicitante
+y al de TARS; el dueño solicitante está exento de la comprobación de su jerarquía.
+No se permite actuar sobre uno mismo, sobre TARS o sobre el dueño. No se aplica
+ni retira timeout a bots o administradores. La desconexión de voz existente
+conserva su política anterior de roles.
+
+El código valida y ejecuta estas acciones sin IA. Solo confirma éxito después de
+la respuesta de Discord. Registra acciones, denegaciones y errores si existe
+`LOG_CHANNEL_ID`, y envía el solicitante como motivo al registro de auditoría.
+
+Referencia: [Modificar miembros en Discord](https://github.com/discord/discord-api-docs/blob/main/developers/resources/guild.mdx#modify-guild-member).
+
 ## Límites de ejecución
 
 - Respuestas normales: 1–3 frases, hasta 600 caracteres. Una petición explícita
