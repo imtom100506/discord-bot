@@ -34,6 +34,7 @@ function bot() {
   client.ws = { ping: 42 };
   client.login = async () => { logins++; };
   const aiCalls = [];
+  const muteCalls = [];
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/index"), "utf8"), {
     require(name) {
       if (name === "dotenv") return { config() {} };
@@ -43,11 +44,13 @@ function bot() {
       if (name === "./commandUtils") return utils;
       if (name === "./botCapabilities") return require("../src/botCapabilities");
       if (name === "./moderation") return require("../src/moderation");
+      if (name === "./textMute") return { createTextMutes: () => ({ mute: async (...args) => muteCalls.push(args) }) };
+      if (name === "./muteStore") return require("../src/muteStore");
       throw new Error(name);
     },
     process: { env: {}, on() {}, exit() { throw new Error("Unexpected exit"); } }, console,
   });
-  return { client, aiCalls, logins };
+  return { client, aiCalls, logins, muteCalls };
 }
 
 function interaction(commandName, argument, guild = null) {
@@ -136,15 +139,16 @@ test("command questions and invented commands bypass AI and moderation", async (
 });
 
 test("prefix and slash moderation bypass AI even with command words in the nickname", async () => {
-  const { client, aiCalls } = bot();
+  const { client, aiCalls, muteCalls } = bot();
   const calls = [];
   const guild = { ownerId: "owner", members: {
     fetch: async ({ user }) => user === "1" ? {
       roles: { cache: { some: predicate => predicate({ name: "Sigma" }) }, highest: { comparePositionTo: () => 1 } },
       permissions: { has: () => true },
     } : {
-      id: "123", user: { bot: false }, roles: { highest: {} }, manageable: true, moderatable: true,
-      timeout: async duration => calls.push(duration), setNickname: async name => calls.push(name),
+      id: "123", user: { bot: false }, roles: { highest: {} }, manageable: true,
+      permissions: { has: () => false }, isCommunicationDisabled: () => false,
+      timeout: async () => { throw new Error("No timeout"); }, setNickname: async name => calls.push(name),
     },
     fetchMe: async () => ({ permissions: { has: () => true } }),
   } };
@@ -156,7 +160,8 @@ test("prefix and slash moderation bypass AI even with command words in the nickn
     content: "!tars cambia el apodo de <@123> a saca resume comandos", author: { id: "1", username: "tester" }, guild,
     channel: { id: "2", sendTyping: async () => {} }, reply: async payload => replies.push(payload),
   });
-  assert.deepEqual(calls, [600000, "saca resume comandos"]);
+  assert.equal(muteCalls[0][2], 600000);
+  assert.deepEqual(calls, ["saca resume comandos"]);
   assert.match(replies[0].content, /Apodo actualizado/);
   const dm = interaction("tars", "mutea a <@123> por 10 minutos");
   await client.listeners("interactionCreate")[0](dm);

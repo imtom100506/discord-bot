@@ -5,6 +5,8 @@ const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse } = require("./commandUtils");
 const { VOICE_ROLES: ROLES_AUTORIZADOS, HELP, commandReply } = require("./botCapabilities");
 const { parseModeration, moderate } = require("./moderation");
+const { createTextMutes } = require("./textMute");
+const { createDiscordMuteStore } = require("./muteStore");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
@@ -15,6 +17,8 @@ const client = new Client({
   rest: { timeout: 60000 },
   allowedMentions: { parse: [], repliedUser: false },
 });
+const muteStateChannel = process.env.TARS_STATE_CHANNEL_ID || process.env.LOG_CHANNEL_ID;
+const textMutes = createTextMutes({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel) : undefined });
 const channelContext = new Map();
 
 async function sendLog(type, data) {
@@ -45,6 +49,21 @@ const commands = [
 client.once("ready", async () => {
   console.log(`Bot conectado como: ${client.user.tag}`);
   void sendLog("conexion", { bot: client.user.tag, servidores: client.guilds.cache.size });
+  const restoreMutes = async () => {
+    try { await textMutes.sweep(client, sendLog); }
+    catch (error) { console.error("No se pudo recuperar el registro de mutes de texto:", error.message); }
+  };
+  await restoreMutes();
+  for (const guild of client.guilds.cache.values()) {
+    try { await textMutes.syncGuild(guild); }
+    catch (error) { void sendLog("mute_texto_error", { servidor_id: guild.id, error: error.message }); }
+  }
+  // Evitar acumular revisiones si Discord tarda en responder.
+  const reviewMutes = async () => {
+    await restoreMutes();
+    setTimeout(reviewMutes, 5000).unref();
+  };
+  setTimeout(reviewMutes, 5000).unref();
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -52,6 +71,12 @@ client.once("ready", async () => {
   } catch (error) {
     console.error("Error registrando comandos:", error);
   }
+});
+
+client.on("channelCreate", channel => {
+  void textMutes.syncChannel(channel).catch(error => {
+    void sendLog("mute_texto_error", { canal_id: channel.id, error: error.message });
+  });
 });
 
 async function getServerContext(guild) {
@@ -107,7 +132,7 @@ async function execute(ctx, command, argument) {
   }
   const text = String(argument ?? "").trim();
   const moderation = command === "tars" ? parseModeration(text) : null;
-  if (moderation) return moderate(ctx, moderation, sendLog);
+  if (moderation) return moderate(ctx, moderation, sendLog, textMutes);
   const directReply = command === "tars" ? commandReply(text) : null;
   if (directReply) return ctx.reply(directReply);
   const isKick = command === "tars" && /\b(kick|expulsa|saca|bota|desconecta)\b/i.test(text);

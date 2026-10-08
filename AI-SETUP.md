@@ -33,7 +33,7 @@ debe asumir que lo despertarán. Abre la URL del servicio para reactivarlo.
 El alojamiento gratuito no garantiza que el bot esté disponible las 24 horas.
 No ejecutes simultáneamente otra copia local con el mismo token de Discord.
 
-## Moderación: apodos y timeout
+## Moderación: apodos y mute solo de texto
 
 Usa una mención real de Discord en lugar de escribir el nombre a mano:
 
@@ -48,23 +48,53 @@ Usa una mención real de Discord en lugar de escribir el nombre a mano:
 También funcionan en el campo `mensaje` de `/tars`, sin escribir `!tars`.
 Se aceptan `mute`, `silencia`, `unmute` y `apodo @usuario Nuevo apodo`.
 Las duraciones son enteras: segundos, minutos, horas o días (`s`, `m`, `h`, `d`),
-entre 1 segundo y 28 días. El timeout restringe comunicación en el servidor,
-no solo el micrófono; Discord lo retira al vencer aunque el bot esté apagado.
+entre 1 segundo y 28 días (límite de TARS). El mute bloquea enviar mensajes,
+crear publicaciones/hilos y escribir en hilos de todos los canales, incluido
+el chat escrito de los canales de voz. No modifica conectarse ni hablar en voz.
+Se aplican restricciones por usuario para que otros roles con permisos de
+escritura no anulen el mute. No se usa el timeout de Discord.
 Los apodos admiten de 1 a 32 caracteres; no cambian el nombre global de la cuenta.
 
 Para estas funciones, el solicitante necesita `Líder Supremo` o `Sigma` y el
-permiso `Moderar miembros` (timeout) o `Gestionar apodos` (apodos). TARS también
-necesita ese permiso. El objetivo debe tener un rol inferior al del solicitante
+permiso `Moderar miembros` (texto) o `Gestionar apodos` (apodos). TARS necesita
+`Gestionar roles` y permisos efectivos para editar sobrescrituras en todos los
+canales; para apodos necesita `Gestionar apodos`.
+El objetivo debe tener un rol inferior al del solicitante
 y al de TARS; el dueño solicitante está exento de la comprobación de su jerarquía.
 No se permite actuar sobre uno mismo, sobre TARS o sobre el dueño. No se aplica
-ni retira timeout a bots o administradores. La desconexión de voz existente
+mute de texto a bots o administradores. La desconexión de voz existente
 conserva su política anterior de roles.
 
 El código valida y ejecuta estas acciones sin IA. Solo confirma éxito después de
 la respuesta de Discord. Registra acciones, denegaciones y errores si existe
 `LOG_CHANNEL_ID`, y envía el solicitante como motivo al registro de auditoría.
 
-Referencia: [Modificar miembros en Discord](https://github.com/discord/discord-api-docs/blob/main/developers/resources/guild.mdx#modify-guild-member).
+TARS guarda los permisos de texto anteriores antes de cambiarlos y los restaura
+al desmutear o al vencer. Conserva los otros permisos del usuario. Revisa los
+vencimientos cada 5 segundos; si está apagado, restaura al arrancar. Discord no
+retira estas restricciones por sí solo. Los errores parciales se revierten y
+las restauraciones fallidas se reintentan. Las restricciones se aplican también
+a canales creados mientras está activo y se revisan al arrancar.
+
+El registro se guarda como adjunto de un mensaje del propio bot en
+`TARS_STATE_CHANNEL_ID`, o en `LOG_CHANNEL_ID` si no se configura el primero.
+El bot necesita ver el canal, leer su historial, enviar mensajes y adjuntar
+archivos. Usa preferentemente un canal privado de moderación. No borres el
+mensaje «TARS · Registro de mutes de texto · No borrar» ni su adjunto. Este
+registro permite recuperar vencimientos y permisos después de desplegar en
+Render, sin depender de su disco temporal. Ejecuta una sola instancia de TARS.
+
+Sin canal de estado ni de logs, se usa `data/text-mutes.json` (excluido de Git).
+Puedes cambiar esa carpeta con `TARS_DATA_DIR`; debe estar en almacenamiento
+persistente. En Render usa el canal de Discord: perder el archivo local impediría
+restaurar automáticamente permisos y vencimientos.
+
+Los timeout aplicados por la versión anterior siguen activos hasta vencer.
+Retíralos manualmente desde Discord para liberar también la voz; los comandos
+nuevos nunca cambian un timeout preexistente. Si detectan uno, indican retirarlo
+antes de aplicar el mute de texto.
+
+Referencia: [Permisos de canales e hilos de Discord](https://github.com/discord/discord-api-docs/blob/main/developers/topics/permissions.mdx).
 
 ## Límites de ejecución
 

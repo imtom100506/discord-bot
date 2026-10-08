@@ -12,8 +12,9 @@ function fixture(options = {}) {
   };
   const target = {
     id: options.targetId ?? "123", user: { bot: options.bot ?? false },
-    roles: { highest: {} }, manageable: options.manageable ?? true, moderatable: options.moderatable ?? true,
-    async timeout(value, reason) { if (options.failure) throw { code: options.failure }; calls.push(["timeout", value, reason]); },
+    roles: { highest: {} }, manageable: options.manageable ?? true,
+    permissions: { has: () => options.admin ?? false }, isCommunicationDisabled: () => options.oldTimeout ?? false,
+    async timeout() { throw new Error("No se debe modificar la voz mediante timeout"); },
     async setNickname(value, reason) { if (options.failure) throw { code: options.failure }; calls.push(["nickname", value, reason]); },
   };
   const ctx = {
@@ -28,10 +29,14 @@ function fixture(options = {}) {
       async fetchMe() { return { permissions: { has: () => options.botPermission !== false } }; },
     } },
   };
-  return { ctx, calls, replies, logs, fetches, run: text => moderate(ctx, parseModeration(text), async (...args) => logs.push(args)) };
+  const textMutes = {
+    async mute(guild, id, duration, reason) { if (options.failure) throw { code: options.failure }; calls.push(["textmute", duration, reason]); },
+    async unmute(guild, id, reason) { if (options.failure) throw { code: options.failure }; calls.push(["textunmute", null, reason]); return true; },
+  };
+  return { ctx, calls, replies, logs, fetches, run: text => moderate(ctx, parseModeration(text), async (...args) => logs.push(args), textMutes) };
 }
 
-test("timeout durations accept explicit units and enforce Discord's 28 day maximum", () => {
+test("text mute durations accept explicit units and enforce the configured maximum", () => {
   for (const [input, result] of [["10 minutos", 600000], ["24 horas", 86400000], ["28 días", 2419200000], ["30m", 1800000], ["1s", 1000]]) {
     assert.equal(parseDuration(input), result);
   }
@@ -52,11 +57,11 @@ test("parser requires an explicit command, one mention and complete arguments", 
   assert.equal(parseModeration("quita el apodo de <@123>").nickname, null);
 });
 
-test("timeout, removal and nickname actions call Discord exactly once with audit reason", async () => {
+test("text mute, removal and nickname actions call their services once with audit reason", async () => {
   for (const [text, method, value] of [
-    ["mutea a <@123> por 10 minutos", "timeout", 600000],
-    ["mute <@123> 24h", "timeout", 86400000],
-    ["desmutea a <@123>", "timeout", null],
+    ["mutea a <@123> por 10 minutos", "textmute", 600000],
+    ["mute <@123> 24h", "textmute", 86400000],
+    ["desmutea a <@123>", "textunmute", null],
     ["cambia el apodo de <@123> a Capitán Tom", "nickname", "Capitán Tom"],
     ["quita el apodo de <@123>", "nickname", null],
   ]) {
@@ -81,7 +86,7 @@ test("roles, permissions, actor and bot hierarchy prevent unauthorized mutations
       assert.equal(f.logs[0][0], "moderacion_denegada");
     }
   }
-  for (const options of [{ bot: true }, { moderatable: false }]) {
+  for (const options of [{ bot: true }, { admin: true }, { oldTimeout: true }]) {
     const f = fixture(options);
     await f.run("mute <@123> 10m");
     assert.equal(f.calls.length, 0);
