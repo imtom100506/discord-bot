@@ -23,6 +23,15 @@ test('voice uses compact prompt and generation budget without retry storms', asy
   assert.ok(requests[0].messages[0].content.length < 400);
 });
 
+test('cancelled voice request uses no provider calls or reservations', async () => {
+  let calls = 0, reservations = 0;
+  const ai = make(async () => { calls++; return ok('Hola.'); });
+  ai.setBudget({ reserve: async () => { reservations++; } });
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(ai.askAI('u', 'hola', { voice: true, signal: controller.signal }));
+  assert.equal(calls, 0); assert.equal(reservations, 0);
+});
+
 test('503 retries then falls back; only successful turns enter history', async () => {
   const requests = [];
   const ai = make(async (url, init) => {

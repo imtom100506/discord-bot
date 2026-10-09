@@ -12,12 +12,22 @@ function wav(pcm, rate = 16000) {
   return Buffer.concat([header, pcm]);
 }
 
-function hasSpeech(pcm) {
-  if (pcm.length < 8000) return false;
-  let energy = 0;
-  for (let i = 0; i < pcm.length; i += 2) energy += pcm.readInt16LE(i) ** 2;
-  return Math.sqrt(energy / (pcm.length / 2)) > 100;
+function trimSpeech(pcm) {
+  // Ventanas de 20 ms: el silencio largo no diluye una respuesta breve como «sí».
+  let first = -1, last = 0, voiced = 0;
+  const length = pcm.length - pcm.length % 2;
+  for (let offset = 0; offset < length; offset += 640) {
+    const end = Math.min(offset + 640, length);
+    let energy = 0;
+    for (let i = offset; i < end; i += 2) energy += pcm.readInt16LE(i) ** 2;
+    if (Math.sqrt(energy / ((end - offset) / 2)) <= 100) continue;
+    if (first < 0) first = offset;
+    last = end; voiced += end - offset;
+  }
+  if (voiced < 3200) return Buffer.alloc(0); // Menos de 100 ms: descartar golpes breves.
+  return pcm.subarray(Math.max(0, first - 3200), Math.min(length, last + 3200));
 }
+const hasSpeech = pcm => trimSpeech(pcm).length > 0;
 
 function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch, now = Date.now, runImpl = run,
   neural = require('./neuralSpeech').createNeuralSpeech() } = {}) {
@@ -39,7 +49,8 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     if (env.TARS_TTS_ENGINE !== 'espeak') require('./localSpeech').ttsConfig();
   }
   async function transcribe(pcm, signal) {
-    if (!hasSpeech(pcm)) return '';
+    pcm = trimSpeech(pcm);
+    if (!pcm.length) return '';
     if (now() < blockedUntil) throw new Error('Transcripción en pausa por límite del proveedor.');
     await budget.reserve({ audio: Math.max(10, Math.ceil(pcm.length / 32000)) });
     signal.throwIfAborted();
@@ -80,4 +91,4 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
   }
   return { check, transcribe, synthesize, warm, close };
 }
-module.exports = { wav, hasSpeech, createVoiceAudio };
+module.exports = { wav, hasSpeech, trimSpeech, createVoiceAudio };

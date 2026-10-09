@@ -10,7 +10,7 @@
 - Voz bajo demanda con `/entrar`, `/escuchar` y `/salir`; sin escucha continua.
 - Salida tras 10 minutos sin invocaciones y cuando el canal queda vacío.
 - Transcripción limitada, síntesis local, presupuesto compartido persistido en Discord.
-- Dockerfile e instrucciones de activación en `VOICE-SETUP.md`.
+- Dockerfile e instrucciones de activación (actualmente en `README.md`).
 - Mute de texto temporal y comando para retirarlo.
 - Cambio y restablecimiento de apodos.
 - Recuperación de mutes y vencimientos después de reinicios y despliegues.

@@ -4,7 +4,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { createVoice, IDLE_MS, FOLLOWUP_MS, MAX_AUDIO_BYTES } = require('../src/voice');
 const { createUsageBudget } = require('../src/usageBudget');
-const { wav, createVoiceAudio } = require('../src/voiceAudio');
+const { wav, trimSpeech, createVoiceAudio } = require('../src/voiceAudio');
 
 test('budget persists reservations, serializes callers and survives restart', async () => {
   let data, time = 1000;
@@ -41,6 +41,15 @@ test('silent capture costs nothing; actual transcription reserves before request
   await assert.rejects(audio.transcribe(pcm, signal));
   assert.equal(calls.length, 2);
   assert.equal(wav(pcm).readUInt32LE(24), 16000);
+});
+
+test('short quiet speech survives surrounding silence; brief clicks do not', () => {
+  const pcm = Buffer.alloc(32000 * 3);
+  for (let i = 32000; i < 32000 + 6400; i += 2) pcm.writeInt16LE(150, i);
+  assert.equal(trimSpeech(pcm).length, 12800);
+  const click = Buffer.alloc(32000); click.writeInt16LE(30000, 100);
+  assert.equal(trimSpeech(click).length, 0);
+  assert.equal(trimSpeech(Buffer.alloc(3)).length, 0);
 });
 
 test('neural TTS has bounded runtime and falls back locally without a network request', async () => {
@@ -216,4 +225,50 @@ test('wake and followup renew inactivity; followup expires and excludes other sp
   assert.equal(pcm.length, 2);
   await f.advance(IDLE_MS - FOLLOWUP_MS - 1); assert.equal(f.destroyed, 0);
   await f.advance(1); assert.equal(f.destroyed, 1);
+});
+
+test('empty followup stays silent and preserves remaining conversation window', async () => {
+  let questions = 0, answers = 0;
+  const f = fixture({
+    wakeFactory: () => ({ frameLength: 2, process: frame => frame[0] === 42 ? 0 : -1, release() {} }),
+    transcribe: async () => ++questions === 2 ? '' : 'hola',
+    askAI: async () => { answers++; return 'Hola.'; },
+  });
+  await f.voice.handle(f.ctx, 'entrar');
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.from([42, 0, 0, 0, 7, 8])); await f.advance(0);
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.alloc(8)); await f.advance(0);
+  assert.equal(f.replies.length, 1);
+  await f.advance(1000);
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.from([7, 8])); await f.advance(0);
+  assert.equal(answers, 2); f.voice.leave();
+});
+
+test('budget pause stops new capture until retry time without disconnecting', async () => {
+  const f = fixture({
+    wakeFactory: () => ({ frameLength: 2, process: () => 0, release() {} }),
+    transcribe: async () => { throw Object.assign(Error('Dame un momento.'), { code: 'AI_BUDGET', retryAfterMs: 60000 }); },
+  });
+  await f.voice.handle(f.ctx, 'entrar');
+  f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.alloc(8)); await f.advance(0);
+  f.receiver.speaking.emit('start', 'human'); assert.equal(f.subscriptions, 1);
+  await f.advance(60000);
+  f.receiver.speaking.emit('start', 'human'); assert.equal(f.subscriptions, 2);
+  assert.equal(f.destroyed, 0); f.voice.leave();
+});
+
+test('wake phrase alone allows the question after a short pause', async () => {
+  let transcriptions = 0, answers = 0;
+  const f = fixture({
+    wakeFactory: () => ({ frameLength: 2, process: frame => frame[0] === 42 ? 0 : -1, release() {} }),
+    transcribe: async () => ++transcriptions === 1 ? '' : 'hola',
+    askAI: async () => { answers++; return 'Hola.'; },
+  });
+  await f.voice.handle(f.ctx, 'entrar');
+  f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.from([42, 0, 0, 0])); await f.advance(0);
+  await f.advance(1500);
+  f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.from([7, 8])); await f.advance(0);
+  assert.equal(answers, 1); assert.equal(f.replies.length, 1); f.voice.leave();
 });

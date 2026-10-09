@@ -35,7 +35,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     s.idleTimer?.unref?.();
   }
   async function handle(ctx, command) {
-    if (!enabled) return ctx.reply('La voz aún no está habilitada. Consulta VOICE-SETUP.md.');
+    if (!enabled) return ctx.reply('La voz aún no está habilitada.');
     if (!ctx.guild) return ctx.reply('Usa este comando dentro de un servidor.');
     const member = await ctx.guild.members.fetch(ctx.user.id);
     const channel = member.voice.channel;
@@ -69,7 +69,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
             s.wake = startWakeListener({ receiver: connection.receiver, api, decoderFactory,
               detectorFactory: wakeFactory, setTimer, clearTimer, now,
               followupEligible: id => id === s.followupUser && now() < s.followupUntil,
-              eligible: id => !s.closed && !s.busy &&
+              eligible: id => !s.closed && !s.busy && now() >= (s.blockedUntil || 0) &&
                 s.voiceChannel.members.has(id) && !s.voiceChannel.members.get(id).user.bot,
               onWake: (id, source) => { void respond(s, id, source); },
               onError: event => {
@@ -91,6 +91,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     if (!s || s.voiceChannel.id !== channel.id) return ctx.reply('Debes estar en mi canal. Usa /entrar si todavía no estoy conectado.');
     if (command === 'salir') { leave(s); return ctx.reply('Desconectado del canal de voz.'); }
     if (s.busy) return ctx.reply('Espera a que termine de responder.');
+    if (now() < (s.blockedUntil || 0)) return ctx.reply(s.pauseMessage);
     return respond(s, ctx.user.id, undefined, ctx);
   }
   async function respond(s, userId, source, ctx) {
@@ -99,9 +100,11 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     const mark = key => { timings[key] = now() - stage; stage = now(); };
     s.busy = true;
     s.wake?.pause();
-    s.lastCall = now(); schedule(s);
+    const followup = !source && !ctx;
+    const previousWindow = s.followupUntil;
+    if (!followup) { s.lastCall = now(); schedule(s); }
     s.followupUntil = 0;
-    let answered = false;
+    let answered = false, empty = false;
     try {
       // Se suscribe ANTES del aviso para no perder el inicio de la pregunta.
       const captured = capture(s, userId, source);
@@ -112,8 +115,13 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       const question = await audio.transcribe(pcm, s.abort.signal);
       mark('transcripcion_ms');
       if (s.closed) return;
-      if (!question) return await tell(s, 'No detecté una pregunta. Usa /escuchar para intentarlo otra vez.');
-      const reply = await askAI(userId, question, { voice: true });
+      if (!question) {
+        empty = true;
+        if (ctx) await tell(s, 'No te oí bien. ¿Puedes repetirlo?');
+        return;
+      }
+      if (followup) { s.lastCall = now(); schedule(s); }
+      const reply = await askAI(userId, question, { voice: true, signal: s.abort.signal });
       mark('respuesta_ms');
       if (s.closed) return;
       const wav = await audio.synthesize(reply, s.abort.signal);
@@ -125,6 +133,11 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
       answered = true;
     } catch (error) {
+      if (error.code === 'AI_BUDGET') {
+        s.blockedUntil = now() + (error.retryAfterMs || 30000);
+        s.pauseMessage = error.message;
+        console.info('[voz:pausa]', JSON.stringify({ reason: error.reason, retry_ms: error.retryAfterMs }));
+      }
       if (!s.closed) await tell(s, error.code === 'AI_BUDGET' ? error.message : 'No pude completar la respuesta de voz. No reintentaré automáticamente.');
     } finally {
       console.info('[voz:tiempos]', JSON.stringify({ ...timings, total_ms: now() - started }));
@@ -132,6 +145,10 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       s.player.stop(true); s.busy = false;
       if (!s.closed && now() - s.lastCall >= IDLE_MS) leave(s);
       if (!s.closed && answered) { s.followupUser = userId; s.followupUntil = now() + FOLLOWUP_MS; }
+      // Un ruido o silencio no consume ni prolonga la ventana de continuación.
+      if (!s.closed && empty && followup) s.followupUntil = previousWindow;
+      // Si dijo solo «Hey TARS», permitir que añada la pregunta tras una pausa.
+      if (!s.closed && empty && source) { s.followupUser = userId; s.followupUntil = now() + FOLLOWUP_MS; }
     }
   }
   function capture(s, userId, source) {

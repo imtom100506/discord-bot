@@ -32,8 +32,10 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
   let pending = 0;
   let budget;
 
-  async function request(provider, messages, voice = false) {
+  async function request(provider, messages, voice = false, signal) {
+    signal?.throwIfAborted();
     if (provider.nextRequest > now()) await wait(provider.nextRequest - now());
+    signal?.throwIfAborted();
     provider.nextRequest = now() + spacingMs;
     const body = { model: provider.model, messages, stream: false };
     if (provider.name === 'Groq') Object.assign(body, {
@@ -41,11 +43,12 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     });
     else body.max_tokens = voice ? 256 : 1024;
     if (budget) await budget.reserve({ tokens: Buffer.byteLength(JSON.stringify(messages), 'utf8') + (body.max_completion_tokens || body.max_tokens) });
+    signal?.throwIfAborted();
     try {
       const response = await fetchImpl(provider.url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body), signal: AbortSignal.timeout(20000),
+        body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
       });
       // Leer el cuerpo dentro del mismo manejo de errores y timeout.
       const data = await response.json();
@@ -62,19 +65,21 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       }
       return text;
     } catch (error) {
+      signal?.throwIfAborted();
       if (error.status) throw error;
       // Fallos de red, JSON inválido y timeout son recuperables.
       throw Object.assign(new Error(`${provider.name}: fallo de conexión o respuesta`), { status: 503 });
     }
   }
 
-  async function generate(messages, voice = false) {
+  async function generate(messages, voice = false, signal) {
     if (!providers.length) throw Object.assign(new Error('Faltan credenciales de IA.'), { code: 'AI_CONFIG' });
     for (const provider of providers) {
       if (provider.blockedUntil > now()) continue;
       try {
-        return voice ? await request(provider, messages, true) : await withAIRetry(() => request(provider, messages), { wait });
+        return voice ? await request(provider, messages, true, signal) : await withAIRetry(() => request(provider, messages, false, signal), { wait });
       } catch (error) {
+        signal?.throwIfAborted();
         if (error.code === 'AI_BUDGET' || error.cause?.code === 'AI_BUDGET') throw error.cause || error;
         const status = error.cause?.status || error.status;
         if (status !== 429) provider.blockedUntil = now() + ([400, 401, 403, 404].includes(status) ? 300000 : 30000);
@@ -84,22 +89,23 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     throw unavailable();
   }
 
-  function askAI(userId, userMessage, { context = '', brief = false, voice = false } = {}) {
+  function askAI(userId, userMessage, { context = '', brief = false, voice = false, signal } = {}) {
     if (pending >= 8) return Promise.reject(Object.assign(new Error('Cola de IA llena.'), { code: 'AI_BUSY' }));
     pending++;
     const enqueued = now();
     const task = queue.then(async () => {
+      signal?.throwIfAborted();
       if (now() - enqueued > 90000) throw Object.assign(new Error('La cola de IA tardó demasiado.'), { code: 'AI_BUSY' });
       const history = histories.get(userId) || [];
       const current = { userId, cleared: false };
       activeHistory = current;
-      const input = clip(String(userMessage), 6000);
+      const input = clip(String(userMessage), voice ? 800 : 6000);
       const limit = voice ? 180 : brief ? 600 : responseLimit(input);
       const prompt = voice ? 'Eres TARS, robot con humor seco. Habla español conversacional: 1-2 frases breves, directas y listas para voz. Sin listas, Markdown ni saludos repetidos. Sigue el hilo; aclara solo si hace falta. No ejecutas acciones ni inventas recuerdos.' : systemPrompt;
-      const messages = [{ role: 'system', content: `${prompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...(voice ? history.slice(-2) : history)];
+      const messages = [{ role: 'system', content: `${prompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...(voice ? history.slice(-2).map(msg => ({ ...msg, content: clip(msg.content, 500) })) : history)];
       messages.push({ role: 'user', content: context ? `Contexto del servidor:\n${clip(context, 3000)}\n\nPregunta: ${input}` : input });
       let reply;
-      try { reply = compactResponse(await generate(messages, voice), limit); }
+      try { reply = compactResponse(await generate(messages, voice, signal), limit); }
       finally { activeHistory = undefined; }
       // No restaurar memoria si el usuario la borró mientras esperaba la respuesta.
       if (!current.cleared) {
