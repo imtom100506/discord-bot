@@ -19,9 +19,19 @@ function hasSpeech(pcm) {
   return Math.sqrt(energy / (pcm.length / 2)) > 100;
 }
 
-function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch, now = Date.now, runImpl = run } = {}) {
+function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch, now = Date.now, runImpl = run,
+  neural = require('./neuralSpeech').createNeuralSpeech() } = {}) {
   const execute = runImpl;
   let blockedUntil = 0;
+  let neuralFailed = false;
+  let generation = 0;
+  async function warm() {
+    if (env.TARS_TTS_ENGINE === 'espeak' || neuralFailed) return;
+    const started = generation;
+    try { await neural.warm(); }
+    catch { if (started === generation) { neuralFailed = true; console.warn('[voz:tts] Carga neural fallida; respaldo ligero durante esta sesión.'); } }
+  }
+  function close() { generation++; neural.close(); neuralFailed = false; }
   async function check() {
     if (!env.GROQ_API_KEY) throw new Error('Falta GROQ_API_KEY.');
     await execute(env.TARS_ESPEAK_PATH || 'espeak-ng', ['--version'], { timeout: 5000, windowsHide: true });
@@ -53,15 +63,13 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
   }
   async function synthesize(text, signal) {
     const spoken = text.replace(/https?:\/\/\S+/g, '').replace(/[*_`#<>]/g, '').slice(0, 280);
-    if (env.TARS_TTS_ENGINE !== 'espeak') {
+    if (env.TARS_TTS_ENGINE !== 'espeak' && !neuralFailed) {
       try {
-        const { stdout } = await execute(process.execPath, [require.resolve('./ttsLocal'), spoken], {
-          encoding: 'buffer', maxBuffer: 4 * 1024 * 1024, timeout: 45000, windowsHide: true, signal,
-          env: { ...process.env, OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1' },
-        });
-        return stdout;
+        return await neural.synthesize(spoken, signal);
       } catch (error) {
         signal.throwIfAborted();
+        neuralFailed = true;
+        neural.close();
         console.warn('Síntesis neural no disponible; usando voz local ligera.');
       }
     }
@@ -70,6 +78,6 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     });
     return stdout;
   }
-  return { check, transcribe, synthesize };
+  return { check, transcribe, synthesize, warm, close };
 }
 module.exports = { wav, hasSpeech, createVoiceAudio };

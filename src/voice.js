@@ -18,6 +18,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     wakeFactory?.dispose?.();
     clearTimer(s.idleTimer); clearTimer(s.captureTimer);
     s.abort.abort(); s.cancelCapture?.();
+    audio.close?.();
     s.player.stop(true); s.resource?.playStream.destroy();
     s.connection.destroy();
     if (session === s) session = undefined;
@@ -75,13 +76,16 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
               eligible: id => !s.closed && !s.busy && now() >= s.nextCall &&
                 s.voiceChannel.members.has(id) && !s.voiceChannel.members.get(id).user.bot,
               onWake: (id, source) => { void respond(s, id, source); },
-              onError: () => { void tell(s, 'El detector local falló. Usa /escuchar; la sesión conserva su límite de 10 minutos.'); },
+              onError: event => {
+                if (event.fatal) void tell(s, 'No puedo continuar detectando Hey TARS. Usa /escuchar; la sesión conserva su límite de 10 minutos.');
+              },
             });
           } catch {
             await tell(s, 'No pude activar Hey TARS: faltan modelos locales o no pudieron cargarse. Sigo en modo /escuchar.');
           }
         }
         connection.subscribe(s.player); schedule(s);
+        void audio.warm?.();
         if (s.fixedDeadline) return await ctx.reply('Conectado por 10 minutos fijos. Di «Hey TARS» seguido de tu pregunta en la misma frase. Detecto la activación localmente; solo la pregunta se envía a Groq. Atiendo hasta dos hablantes simultáneos y no escucho mientras respondo. /escuchar también funciona.');
         return await ctx.reply('Conectado. Usa /escuchar y luego habla: capturo solo tu pregunta, hasta 12 segundos. Se envía a Groq para transcribirla; no guardo audio. Salgo tras 10 minutos sin llamados.');
       } catch (error) { leave(s); throw error; }
@@ -94,6 +98,9 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     return respond(s, ctx.user.id, undefined, ctx);
   }
   async function respond(s, userId, source, ctx) {
+    const started = now(), timings = {};
+    let stage = started;
+    const mark = key => { timings[key] = now() - stage; stage = now(); };
     s.busy = true;
     s.wake?.pause();
     if (!s.fixedDeadline) { s.lastCall = now(); s.expired = false; schedule(s); }
@@ -103,13 +110,17 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       const captured = capture(s, userId, source);
       if (ctx) await ctx.reply('Te escucho. Haz una pregunta breve y luego guarda silencio.');
       const pcm = await captured;
+      mark('captura_ms');
       if (s.closed) return;
       const question = await audio.transcribe(pcm, s.abort.signal);
+      mark('transcripcion_ms');
       if (s.closed) return;
       if (!question) return await tell(s, 'No detecté una pregunta. Usa /escuchar para intentarlo otra vez.');
       const reply = await askAI(userId, question, { voice: true });
+      mark('respuesta_ms');
       if (s.closed) return;
       const wav = await audio.synthesize(reply, s.abort.signal);
+      mark('sintesis_ms');
       if (s.closed) return;
       s.resource = api.createAudioResource(Readable.from([wav]), { inputType: api.StreamType.Arbitrary });
       s.player.play(s.resource);
@@ -118,6 +129,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     } catch (error) {
       if (!s.closed) await tell(s, error.code === 'AI_BUDGET' ? error.message : 'No pude completar la respuesta de voz. No reintentaré automáticamente.');
     } finally {
+      console.info('[voz:tiempos]', JSON.stringify({ ...timings, total_ms: now() - started }));
       s.cancelCapture?.(); s.resource?.playStream.destroy(); s.resource = undefined;
       s.player.stop(true); s.busy = false;
       if (!s.closed && (s.expired || now() - s.lastCall >= IDLE_MS)) leave(s);

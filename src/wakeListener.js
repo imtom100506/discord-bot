@@ -2,9 +2,19 @@ const { createWakeFactory } = require('./localSpeech');
 
 // Dos hablantes simultáneos como máximo. Nunca mezcla audio entre usuarios.
 function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eligible, onWake, onError,
-  setTimer = setTimeout, clearTimer = clearTimeout }) {
+  setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now }) {
   const active = new Map();
   let stopped = false;
+  let failures = [];
+  function report(error, source, fatal = false) {
+    failures = failures.filter(t => now() - t < 30000);
+    failures.push(now());
+    fatal ||= failures.length >= 3;
+    console.warn('[voz:detector]', JSON.stringify({ source, fatal, name: error?.name,
+      code: error?.code, message: String(error?.message || 'Error desconocido').slice(0, 180) }));
+    if (fatal) stop();
+    onError({ source, fatal });
+  }
   function start(userId) {
     if (stopped || active.has(userId) || active.size >= 2 || !eligible(userId)) return;
     let engine, input, decoder, timer, ended = false, pending = Buffer.alloc(0);
@@ -12,13 +22,20 @@ function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eli
       if (ended) return;
       ended = true; clearTimer(timer); active.delete(userId);
       decoder?.removeListener('data', data); decoder?.removeListener('end', end);
-      decoder?.removeListener('error', fail); input?.removeListener('error', fail);
+      decoder?.removeListener('error', decodeFail); input?.removeListener('error', inputFail);
       engine?.release(); engine = undefined;
-      if (!transfer) { input?.unpipe(decoder); input?.destroy(); decoder?.destroy(); }
+      if (!transfer) {
+        // Los streams pueden emitir un error tardío durante destroy().
+        input?.on('error', () => {}); decoder?.on('error', () => {});
+        input?.unpipe(decoder); input?.destroy(); decoder?.destroy();
+      }
     }
     const end = () => cleanup();
-    const fail = () => { cleanup(); stop(); onError(); };
+    const fail = (error, source, fatal) => { if (ended) return; cleanup(); report(error, source, fatal); };
+    const inputFail = error => fail(error, 'recepcion', false);
+    const decodeFail = error => fail(error, 'opus', false);
     function data(chunk) {
+      if (ended) return;
       if (!eligible(userId)) return cleanup();
       try {
         pending = Buffer.concat([pending, chunk]);
@@ -35,18 +52,18 @@ function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eli
             return;
           }
         }
-      } catch { fail(); }
+      } catch (error) { fail(error, 'modelo', true); }
     }
     try {
       engine = detectorFactory();
       input = receiver.subscribe(userId, { end: { behavior: api.EndBehaviorType.AfterSilence, duration: 900 } });
       decoder = decoderFactory(); active.set(userId, cleanup);
       decoder.on('data', data); decoder.on('end', end);
-      decoder.on('error', fail); input.on('error', fail);
+      decoder.on('error', decodeFail); input.on('error', inputFail);
       // Límite por intervención; una transmisión continua no retiene recursos indefinidamente.
       timer = setTimer(end, 30000); timer?.unref?.();
       input.pipe(decoder);
-    } catch { fail(); }
+    } catch (error) { fail(error, 'inicio', true); }
   }
   function pause() { for (const cleanup of [...active.values()]) cleanup(); }
   function stop() {

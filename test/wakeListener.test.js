@@ -39,9 +39,14 @@ test('speaker cap, pause and stop release resources and prevent new subscription
   f.listener.stop(); f.receiver.speaking.emit('start', 'c');
   assert.equal(f.inputs.size, 2); assert.equal(f.receiver.speaking.listenerCount('start'), 0);
 });
-test('no capture during response/cooldown; stream error disables wake listener', () => {
+test('isolated stream errors recover; repeated failures disable wake listener', () => {
   const f = fixture(); f.receiver.speaking.emit('start', 'a');
   f.inputs.get('a').emit('error', Error('audio')); assert.equal(f.failed, 1);
+  assert.equal(f.receiver.speaking.listenerCount('start'), 1);
+  for (const id of ['b', 'c']) {
+    f.receiver.speaking.emit('start', id);
+    f.inputs.get(id).emit('error', Error('audio'));
+  }
   assert.equal(f.receiver.speaking.listenerCount('start'), 0);
   const g = fixture(); g.pause(); g.receiver.speaking.emit('start', 'a');
   assert.equal(g.inputs.size, 0); g.listener.stop();

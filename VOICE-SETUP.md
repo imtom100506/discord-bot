@@ -40,8 +40,9 @@ garantía oficial de estabilidad.
 - Una transcripción por pregunta; sin reintentos automáticos. Respeta 429.
 - Respuestas de hasta 180 caracteres, prompt corto y solo un turno previo.
   Máximo de generación: 512 tokens en Groq; 256 en el respaldo configurado.
-- Síntesis local bajo demanda. Sin detector de palabra clave ni proceso de IA
-  local permanente. Al salir se cancelan captura, transcripción y reproducción.
+- Síntesis local con modelo precargado durante la sesión y liberado al salir.
+  El modo manual no activa el detector de palabra clave.
+  Al salir se cancelan captura, transcripción, síntesis y reproducción.
   Una respuesta de texto ya en curso puede terminar, pero no se reproduce fuera.
 - 10 minutos desde `/entrar` o el último `/escuchar` aceptado. La conversación
   ambiente y comandos rechazados no reinician el plazo. Termina una respuesta

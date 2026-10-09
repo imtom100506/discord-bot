@@ -46,21 +46,22 @@ test('silent capture costs nothing; actual transcription reserves before request
 test('neural TTS has bounded runtime and falls back locally without a network request', async () => {
   const calls = [];
   const audio = createVoiceAudio({ env: { TARS_TTS_ENGINE: 'piper' },
+    neural: { synthesize: async () => { throw Error('timeout'); }, close() {} },
     fetchImpl: async () => { throw Error('unexpected network'); },
     runImpl: async (file, args, options) => {
       calls.push({ file, args, options });
-      if (calls.length === 1) throw Error('timeout');
       return { stdout: Buffer.from('wav') };
     } });
   assert.equal((await audio.synthesize('Misión lista.', new AbortController().signal)).toString(), 'wav');
-  assert.equal(calls[0].options.timeout, 45000);
-  assert.equal(calls[0].options.env.OMP_NUM_THREADS, '1');
-  assert.ok(calls[1].args.includes('es-419+m3'));
+  assert.equal(calls[0].options.timeout, 10000);
+  assert.ok(calls[0].args.includes('es-419+m3'));
 });
 
 test('leaving during neural speech generation prevents fallback', async () => {
   const abort = new AbortController(); let calls = 0;
-  const audio = createVoiceAudio({ env: {}, runImpl: async () => { calls++; abort.abort(); throw Error('cancelled'); } });
+  const audio = createVoiceAudio({ env: {},
+    neural: { synthesize: async () => { calls++; abort.abort(); throw Error('cancelled'); } },
+    runImpl: async () => { throw Error('unexpected fallback'); } });
   await assert.rejects(audio.synthesize('Misión lista.', abort.signal));
   assert.equal(calls, 1);
 });

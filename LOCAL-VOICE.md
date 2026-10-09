@@ -36,12 +36,24 @@ tope de 12 segundos. `/escuchar` y `/salir` siguen disponibles.
 La voz Davefx es masculina y española (es_ES), con el tono reducido un 10% y cadencia
 ajustada. Es una aproximación de carácter grave/robótico, no una copia de la voz
 de la película. Las respuestas tienen hasta 180 caracteres para reducir demora.
-El modelo de voz se carga en un proceso temporal de un hilo, se libera tras
-cada respuesta y se cancela al salir. Si falla o excede 45 segundos, utiliza
-eSpeak latino masculino grave como respaldo. El presupuesto de Groq sigue
+El modelo de voz se precarga al entrar en un proceso de un hilo y se reutiliza
+durante la sesión; se libera al salir. La carga y cada síntesis tienen un límite
+de 15 segundos cada una. Si fallan, utiliza eSpeak latino masculino grave durante
+el resto de esa sesión, evitando repetir una carga lenta. El presupuesto de Groq sigue
 guardándose antes de cada llamada. La síntesis y la detección no usan Groq.
 
 ## Evidencia y limitaciones
+
+Los errores aislados de recepción o decodificación descartan esa intervención
+sin apagar toda la escucha. Tres errores en 30 segundos, o un error del modelo,
+desactivan la detección y dejan disponible `/escuchar` hasta terminar la sesión.
+Los logs `[voz:detector]` indican origen y detalle; `[voz:tiempos]` registra los
+milisegundos de captura, transcripción, respuesta y síntesis, sin el texto hablado.
+El total incluye reproducción. Para diagnosticar Render, revisar estas líneas
+después de una pregunta. No confundir los tiempos locales con los del servidor.
+
+Prueba del proceso reutilizado: carga inicial de 2,1 segundos y síntesis de una
+frase corta en 0,73 y 0,90 segundos en dos llamadas consecutivas locales.
 
 Pruebas locales de referencia: detección positiva con dos muestras sintéticas
 inglesas de «Hey TARS». Una muestra sintetizada en español NO fue reconocida.
