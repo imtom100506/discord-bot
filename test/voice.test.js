@@ -43,6 +43,28 @@ test('silent capture costs nothing; actual transcription reserves before request
   assert.equal(wav(pcm).readUInt32LE(24), 16000);
 });
 
+test('neural TTS has bounded runtime and falls back locally without a network request', async () => {
+  const calls = [];
+  const audio = createVoiceAudio({ env: { TARS_TTS_ENGINE: 'piper' },
+    fetchImpl: async () => { throw Error('unexpected network'); },
+    runImpl: async (file, args, options) => {
+      calls.push({ file, args, options });
+      if (calls.length === 1) throw Error('timeout');
+      return { stdout: Buffer.from('wav') };
+    } });
+  assert.equal((await audio.synthesize('Misión lista.', new AbortController().signal)).toString(), 'wav');
+  assert.equal(calls[0].options.timeout, 45000);
+  assert.equal(calls[0].options.env.OMP_NUM_THREADS, '1');
+  assert.ok(calls[1].args.includes('es-419+m3'));
+});
+
+test('leaving during neural speech generation prevents fallback', async () => {
+  const abort = new AbortController(); let calls = 0;
+  const audio = createVoiceAudio({ env: {}, runImpl: async () => { calls++; abort.abort(); throw Error('cancelled'); } });
+  await assert.rejects(audio.synthesize('Misión lista.', abort.signal));
+  assert.equal(calls, 1);
+});
+
 function fixture(overrides = {}) {
   let time = 0, destroyed = 0, subscriptions = 0, transcriptions = 0, capture;
   const timers = new Set(), replies = [];
@@ -50,6 +72,7 @@ function fixture(overrides = {}) {
   connection.destroy = () => { destroyed++; };
   connection.subscribe = () => {};
   connection.receiver = { subscribe: id => { assert.equal(id, 'human'); subscriptions++; capture = new PassThrough(); return capture; } };
+  connection.receiver.speaking = new EventEmitter();
   const player = new EventEmitter(); player.stop = () => {}; player.play = () => {};
   const api = { joinVoiceChannel: () => connection, createAudioPlayer: () => player,
     entersState: async () => {}, VoiceConnectionStatus: { Ready: 'ready', Disconnected: 'disconnected' },
@@ -58,6 +81,7 @@ function fixture(overrides = {}) {
   const channel = { id: 'voice', type: 2, guild, permissionsFor: () => ({ has: () => true }), members: new Map([['human', { user: { bot: false } }]]) };
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
   const voice = createVoice({ enabled: true, client: { user: { id: 'bot' } }, api,
+    wakeFactory: overrides.wakeFactory,
     askAI: async () => { throw Error('not expected'); }, decoderFactory: () => new PassThrough(),
     audio: { check: async () => {}, transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
@@ -67,7 +91,7 @@ function fixture(overrides = {}) {
     for (const t of [...timers]) if (t.deadline <= time) { timers.delete(t); t.fn(); }
     await new Promise(resolve => setImmediate(resolve));
   }
-  return { voice, ctx, advance, replies, get capture() { return capture; }, get destroyed() { return destroyed; },
+  return { voice, ctx, advance, replies, receiver: connection.receiver, get capture() { return capture; }, get destroyed() { return destroyed; },
     get subscriptions() { return subscriptions; }, get transcriptions() { return transcriptions; } };
 }
 
@@ -120,4 +144,43 @@ test('empty channel disconnects immediately', async () => {
   member.voice.channel.members.clear();
   f.voice.onVoiceState({ guild: f.ctx.guild }, { id: 'human', channelId: null });
   assert.equal(f.destroyed, 1);
+});
+
+test('wake mode has a fixed deadline even during a manual capture', async () => {
+  const f = fixture({ wakeFactory: () => ({ release() {} }) });
+  await f.voice.handle(f.ctx, 'entrar');
+  await f.advance(IDLE_MS - 1000);
+  const pending = f.voice.handle(f.ctx, 'escuchar');
+  await new Promise(resolve => setImmediate(resolve));
+  await f.advance(1000); await pending;
+  assert.equal(f.destroyed, 1);
+  assert.equal(f.transcriptions, 0);
+});
+
+test('invalid wake configuration falls back to working manual voice', async () => {
+  const f = fixture({ wakeFactory: () => { throw Error('invalid key'); } });
+  await f.voice.handle(f.ctx, 'entrar');
+  assert.ok(f.replies.some(t => t.includes('Sigo en modo /escuchar')));
+  const pending = f.voice.handle(f.ctx, 'escuchar');
+  await new Promise(resolve => setImmediate(resolve));
+  f.capture.end(Buffer.alloc(16000)); await pending;
+  assert.equal(f.transcriptions, 1); f.voice.leave();
+});
+
+test('wake transfers only post-activation audio into the single question pipeline', async () => {
+  const pcm = [];
+  const f = fixture({
+    wakeFactory: () => ({ frameLength: 2, process: frame => frame[0] === 42 ? 0 : -1, release() {} }),
+    transcribe: async data => { pcm.push(data); return ''; },
+  });
+  await f.voice.handle(f.ctx, 'entrar');
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.write(Buffer.alloc(8)); assert.equal(pcm.length, 0);
+  f.capture.write(Buffer.from([42, 0, 0, 0, 7, 8]));
+  f.capture.end(Buffer.from([9, 10]));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.subscriptions, 1);
+  assert.deepEqual(pcm, [Buffer.from([7, 8, 9, 10])]);
+  f.voice.leave();
+  assert.equal(f.receiver.speaking.listenerCount('start'), 0);
 });

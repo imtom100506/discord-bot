@@ -47,7 +47,7 @@ function bot() {
       if (name === "./textMute") return { createTextMutes: () => ({ mute: async (...args) => muteCalls.push(args) }) };
       if (name === "./muteStore") return require("../src/muteStore");
       if (name === "./boundedMap") return require("../src/boundedMap");
-      if (["./usageBudget", "./voiceAudio", "./voice"].includes(name)) return require(`../src/${name.slice(2)}`);
+      if (["./usageBudget", "./voiceAudio", "./voice", "./wakeListener"].includes(name)) return require(`../src/${name.slice(2)}`);
       throw new Error(name);
     },
     process: { env: {}, on() {}, once() {}, exit() { throw new Error("Unexpected exit"); } }, console,

@@ -4,6 +4,9 @@
 
 ### Funciones
 
+- Modo opcional «Hey TARS» con detector local sherpa-onnx sin cuenta, dos hablantes máximos,
+  plazo fijo de diez minutos y reversión con `TARS_WAKE_ENABLED=false`.
+- Voz masculina neural Davefx (primera voz española), tono grave, proceso temporal y respaldo eSpeak latino.
 - Voz bajo demanda con `/entrar`, `/escuchar` y `/salir`; sin escucha continua.
 - Salida tras 10 minutos sin invocaciones y cuando el canal queda vacío.
 - Transcripción limitada, síntesis local, presupuesto compartido persistido en Discord.

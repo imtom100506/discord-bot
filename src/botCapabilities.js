@@ -1,6 +1,6 @@
 const VOICE_ROLES = ["Líder Supremo", "Sigma"];
 const HELP = "**Comandos disponibles:**\n" +
-  "`/entrar`, `/escuchar`, `/salir` (también con !) — Voz si está habilitada; preguntas de hasta 12 segundos, salida tras 10 minutos sin llamados\n" +
+  "`/entrar`, `/escuchar`, `/salir` (también con !) — Voz si está habilitada; preguntas de hasta 12 segundos. Modo manual: 10 minutos sin llamados. Hey TARS, si está configurado: sesión fija de 10 minutos\n" +
   "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
   "`!ayuda` o `/ayuda` — Muestra esta lista\n" +
   "`!reset` o `/reset` — Borra tu historial\n" +
@@ -16,7 +16,7 @@ const HELP = "**Comandos disponibles:**\n" +
 
 const CAPABILITIES = `Funciones reales y únicas de esta instalación de TARS:\n${HELP}
 También se reconoce "resume <cantidad>" dentro de !tars o /tars para resumir mensajes.
-La voz requiere activación en el alojamiento. /entrar conecta, /escuchar captura solo la pregunta del solicitante y /salir desconecta. No escucha continuamente ni detecta el nombre TARS; sale tras 10 minutos sin llamados. Hablar entre usuarios no reinicia el contador.
+La voz requiere activación en el alojamiento. /entrar conecta, /escuchar captura solo la pregunta del solicitante y /salir desconecta. Por defecto sale tras 10 minutos sin llamados. Si se configura el detector local opcional, reconoce «Hey TARS» y sale a los 10 minutos fijos desde la conexión; las preguntas no extienden esa sesión. El mensaje de conexión indica qué modo está activo. No prometas activación por nombre sin esa configuración.
 La desconexión de voz exige exactamente una mención de usuario y uno de los roles indicados; no expulsa del servidor.
 Mutea/mute/silencia bloquea solo mensajes, publicaciones e hilos en los canales del servidor, incluido el chat escrito de canales de voz. No afecta hablar ni conectarse a voz y no usa timeout. Duraciones enteras: segundos, minutos, horas o días; abreviaturas s/m/h/d.
 TARS restaura los permisos anteriores al vencer (revisión cada 5 segundos); si está apagado, lo hace al volver. El registro persiste en el canal de estado/logs configurado o en disco persistente.

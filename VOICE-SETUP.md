@@ -1,12 +1,13 @@
 # Voz de TARS con consumo mínimo
 
-La activación elegida es manual: `/entrar`, `/escuchar`, luego hablar, y `/salir`.
+Por defecto la activación es manual: `/entrar`, `/escuchar`, luego hablar, y `/salir`.
 También funcionan con `!`. No detecta «TARS» ni escucha conversaciones de fondo.
 Sin `/escuchar` no hay suscripciones de recepción, decodificación ni llamadas de IA.
 Solo captura al solicitante durante un máximo de 12 segundos, hasta 900 ms de
 silencio al terminar. No hay grabaciones en disco ni transcripciones en logs.
 La pregunta activada se envía a Groq; la respuesta se sintetiza localmente con
-eSpeak NG, voz española robótica, sin una API de pago ni modelos grandes.
+Piper/Davefx español grave y eSpeak NG latino como respaldo, sin una API de pago.
+La voz neural necesita los modelos que descarga automáticamente el Dockerfile.
 
 ## Render
 
@@ -37,7 +38,7 @@ garantía oficial de estabilidad.
 - Captura PCM mono a 16 kHz: máximo 384 KB por pregunta. Silencio o audio muy breve
   se descartan antes de la API (filtro de energía, no reconocimiento de voz).
 - Una transcripción por pregunta; sin reintentos automáticos. Respeta 429.
-- Respuestas de hasta 280 caracteres, prompt corto y solo un turno previo.
+- Respuestas de hasta 180 caracteres, prompt corto y solo un turno previo.
   Máximo de generación: 512 tokens en Groq; 256 en el respaldo configurado.
 - Síntesis local bajo demanda. Sin detector de palabra clave ni proceso de IA
   local permanente. Al salir se cancelan captura, transcripción y reproducción.
@@ -64,3 +65,7 @@ Fuentes: [Render Free](https://render.com/docs/free),
 [Groq](https://console.groq.com/docs/rate-limits),
 [Discord Voice](https://discord.js.org/docs/packages/voice/0.19.2),
 [eSpeak](https://espeak.sourceforge.net/commands.html).
+
+## Activación local Hey TARS y voz masculina
+
+La configuración actual sin Picovoice está en [LOCAL-VOICE.md](LOCAL-VOICE.md).
