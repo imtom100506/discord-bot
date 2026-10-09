@@ -1,6 +1,6 @@
 const { createWakeFactory } = require('./localSpeech');
 
-// Dos hablantes simultáneos como máximo. Nunca mezcla audio entre usuarios.
+// Tres hablantes simultáneos como máximo. Nunca mezcla audio entre usuarios.
 function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eligible, onWake, onError,
   setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now, followupEligible = () => false }) {
   const active = new Map();
@@ -16,9 +16,10 @@ function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eli
     onError({ source, fatal });
   }
   function start(userId) {
-    if (stopped || active.has(userId) || active.size >= 2 || !eligible(userId)) return;
+    if (stopped || active.has(userId) || !eligible(userId)) return;
     // La continuación solo se abre para el interlocutor anterior.
     if (followupEligible(userId)) { onWake(userId); return; }
+    if (active.size >= 3) return;
     let engine, input, decoder, timer, ended = false, pending = Buffer.alloc(0);
     function cleanup(transfer = false) {
       if (ended) return;
@@ -60,6 +61,11 @@ function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eli
       engine = detectorFactory();
       input = receiver.subscribe(userId, { end: { behavior: api.EndBehaviorType.AfterSilence, duration: 900 } });
       decoder = decoderFactory(); active.set(userId, cleanup);
+      cleanup.take = () => {
+        const source = { input, decoder, initial: Buffer.from(pending) };
+        cleanup(true);
+        return source;
+      };
       decoder.on('data', data); decoder.on('end', end);
       decoder.on('error', decodeFail); input.on('error', inputFail);
       // Límite por intervención; una transmisión continua no retiene recursos indefinidamente.
@@ -73,6 +79,6 @@ function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eli
     stopped = true; receiver.speaking.removeListener('start', start); pause();
   }
   receiver.speaking.on('start', start);
-  return { pause, stop };
+  return { pause, stop, take: userId => active.get(userId)?.take() };
 }
 module.exports = { createWakeFactory, startWakeListener };

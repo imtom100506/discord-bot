@@ -31,13 +31,13 @@ test('background speech never activates; split frames retain question bytes afte
 });
 test('speaker cap, pause and stop release resources and prevent new subscriptions', () => {
   const f = fixture();
-  for (const id of ['a', 'b', 'c']) f.receiver.speaking.emit('start', id);
-  assert.equal(f.inputs.size, 2);
-  f.listener.pause(); assert.equal(f.released, 2);
+  for (const id of ['a', 'b', 'c', 'd']) f.receiver.speaking.emit('start', id);
+  assert.equal(f.inputs.size, 3);
+  f.listener.pause(); assert.equal(f.released, 3);
   assert.ok([...f.inputs.values()].every(s => s.destroyed));
   assert.equal(f.timers.size, 0);
   f.listener.stop(); f.receiver.speaking.emit('start', 'c');
-  assert.equal(f.inputs.size, 2); assert.equal(f.receiver.speaking.listenerCount('start'), 0);
+  assert.equal(f.inputs.size, 3); assert.equal(f.receiver.speaking.listenerCount('start'), 0);
 });
 test('isolated stream errors recover; repeated failures disable wake listener', () => {
   const f = fixture(); f.receiver.speaking.emit('start', 'a');
@@ -54,4 +54,14 @@ test('isolated stream errors recover; repeated failures disable wake listener', 
 test('local detector requires no account; disabled mode loads nothing', () => {
   assert.equal(createWakeFactory({}), null);
   assert.equal(typeof createWakeFactory({ TARS_WAKE_ENABLED: 'true' }), 'function');
+});
+
+test('third concurrent speaker can activate without mixing the other two streams', () => {
+  const f = fixture();
+  for (const id of ['a', 'b', 'c']) f.receiver.speaking.emit('start', id);
+  f.inputs.get('a').write(Buffer.alloc(8)); f.inputs.get('b').write(Buffer.alloc(8));
+  f.inputs.get('c').write(Buffer.from([42, 0, 0, 0, 7, 8]));
+  assert.equal(f.detected.length, 1); assert.equal(f.detected[0].id, 'c');
+  assert.deepEqual(f.detected[0].source.initial, Buffer.from([7, 8]));
+  f.detected[0].source.input.destroy(); f.detected[0].source.decoder.destroy(); f.listener.stop();
 });

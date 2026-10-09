@@ -9,7 +9,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
   let session, joining = false;
   const load = () => {
     api ||= require('@discordjs/voice');
-    decoderFactory ||= () => new (require('prism-media').opus.Decoder)({ rate: 16000, channels: 1, frameSize: 320 });
+    decoderFactory ||= require('./opusDecoder').createOpusDecoder;
   };
   const tell = (s, text) => s.channel.send({ content: text, allowedMentions: { parse: [] } }).catch(() => {});
   function leave(s = session) {
@@ -98,9 +98,11 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     const started = now(), timings = {};
     let stage = started;
     const mark = key => { timings[key] = now() - stage; stage = now(); };
+    const followup = !source && !ctx;
+    // Reutilizar la recepción existente: destroy() no la retira de Discord hasta «close».
+    source ||= s.wake?.take(userId);
     s.busy = true;
     s.wake?.pause();
-    const followup = !source && !ctx;
     const previousWindow = s.followupUntil;
     if (!followup) { s.lastCall = now(); schedule(s); }
     s.followupUntil = 0;
@@ -133,6 +135,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
       answered = true;
     } catch (error) {
+      console.warn('[voz:error]', JSON.stringify({ stage: timings.respuesta_ms !== undefined ? 'synthesis_or_playback' : timings.transcripcion_ms !== undefined ? 'response' : 'capture_or_transcription', name: error.name, code: error.code, signal: error.signal }));
       if (error.code === 'AI_BUDGET') {
         s.blockedUntil = now() + (error.retryAfterMs || 30000);
         s.pauseMessage = error.message;
@@ -157,22 +160,23 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       let chunks = [initial], size = initial.length, done = false;
       const input = source?.input || s.connection.receiver.subscribe(userId, { end: { behavior: api.EndBehaviorType.AfterSilence, duration: 900 } });
       const decoder = source?.decoder || decoderFactory();
-      function finish(discard = false) {
+      function finish(discard = false, reason = 'end') {
         if (done) return;
         done = true; clearTimer(s.captureTimer);
         input.unpipe(decoder); input.destroy(); decoder.destroy();
         s.cancelCapture = undefined;
+        if (discard || !size) console.info('[voz:captura]', JSON.stringify({ reason, bytes: size, discarded: discard }));
         resolve(discard ? Buffer.alloc(0) : Buffer.concat(chunks, size)); chunks = [];
       }
-      s.cancelCapture = () => finish(true);
-      input.on('error', () => finish(true)); decoder.on('error', () => finish(true));
+      s.cancelCapture = () => finish(true, 'cancelled');
+      input.on('error', () => finish(true, 'receiver_error')); decoder.on('error', () => finish(true, 'decoder_error'));
       decoder.on('data', chunk => {
         const kept = chunk.subarray(0, MAX_AUDIO_BYTES - size);
         chunks.push(kept); size += kept.length;
         if (size >= MAX_AUDIO_BYTES) finish();
       });
       decoder.on('end', () => finish());
-      s.captureTimer = setTimer(() => finish(), 12000);
+      s.captureTimer = setTimer(() => finish(false, 'timeout'), 12000);
       if (!source) input.pipe(decoder);
     });
   }

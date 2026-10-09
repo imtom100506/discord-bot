@@ -7,7 +7,8 @@ No necesita una computadora personal encendida. Una sola instancia por token.
 `!entrar` / `/entrar`: di «Hey TARS» seguido de tu consulta. Después de cada respuesta
 tienes 8 segundos para continuar sin repetir la frase, solo con el mismo interlocutor.
 Sale tras 5 minutos de inactividad. También admite `/escuchar` y `/salir`.
-No escucha mientras habla. Las preguntas duran como máximo 12 segundos.
+No escucha mientras habla. Detecta hasta tres hablantes simultáneos, sin mezclar
+sus voces; responde a una pregunta por vez. Las preguntas duran como máximo 12 segundos.
 
 La detección y voz Davefx española se ejecutan localmente en Render. Los modelos
 se descargan y verifican al construir Docker. Groq transcribe las preguntas y
@@ -25,8 +26,9 @@ El audio reserva al menos 10 segundos por llamada. No borres el registro de cuot
 Estos topes son preventivos; los límites reales de cada proveedor siguen aplicando.
 Mantén las cuentas en el plan gratuito: el bot no modifica la facturación.
 
-El filtro por energía elimina silencios y golpes breves antes de transcribir;
-no es un detector infalible de voz. Una continuación vacía no cierra la ventana
+El filtro por energía descarta capturas sin señal suficiente antes de transcribir;
+las capturas aceptadas se envían completas, sin recortar la voz. No es un detector
+infalible de voz. Una continuación vacía no cierra la ventana
 restante ni genera avisos. Durante una pausa de cuota no se capturan más preguntas.
 Logs: `[voz:tiempos]` para latencia, `[voz:detector]` para recepción/detección y
 `[voz:pausa]` para el motivo y tiempo restante de un límite interno.
@@ -37,5 +39,12 @@ Node 24. `npm ci`, `npm test`. Docker instala ffmpeg y eSpeak NG, además de los
 modelos de voz. `TARS_WAKE_ENABLED=false` vuelve a la activación manual;
 `TARS_TTS_ENGINE=espeak` usa la voz ligera. Render y los proveedores gratuitos
 pueden suspender o limitar el servicio; no se garantiza disponibilidad permanente.
+
+La carga neural tiene hasta 45 segundos en segundo plano. Durante la carga se usa
+la voz ligera, pasando a la voz neural cuando está lista. La síntesis neural sigue
+limitada a 15 segundos por respuesta. Un paquete Opus inválido aislado se descarta
+sin perder el resto de la recepción; cinco inválidos consecutivos reportan error.
+`[voz:captura]` y `[voz:audio]` distinguen capturas vacías, errores y falta de señal;
+`[voz:error]` indica la etapa que falló, sin registrar conversaciones.
 
 Referencia de límites: https://console.groq.com/docs/rate-limits

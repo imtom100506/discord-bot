@@ -27,21 +27,30 @@ function trimSpeech(pcm) {
   if (voiced < 3200) return Buffer.alloc(0); // Menos de 100 ms: descartar golpes breves.
   return pcm.subarray(Math.max(0, first - 3200), Math.min(length, last + 3200));
 }
-const hasSpeech = pcm => trimSpeech(pcm).length > 0;
+function hasSpeech(pcm) {
+  // Conservar el criterio anterior y aceptar además respuestas cortas.
+  let energy = 0;
+  const length = pcm.length - pcm.length % 2;
+  for (let i = 0; i < length; i += 2) energy += pcm.readInt16LE(i) ** 2;
+  return (length >= 8000 && Math.sqrt(energy / (length / 2)) > 100) || trimSpeech(pcm).length > 0;
+}
 
 function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch, now = Date.now, runImpl = run,
   neural = require('./neuralSpeech').createNeuralSpeech() } = {}) {
   const execute = runImpl;
   let blockedUntil = 0;
   let neuralFailed = false;
+  let warming = false;
   let generation = 0;
   async function warm() {
-    if (env.TARS_TTS_ENGINE === 'espeak' || neuralFailed) return;
+    if (env.TARS_TTS_ENGINE === 'espeak' || neuralFailed || warming) return;
+    warming = true;
     const started = generation;
     try { await neural.warm(); }
-    catch { if (started === generation) { neuralFailed = true; console.warn('[voz:tts] Carga neural fallida; respaldo ligero durante esta sesión.'); } }
+    catch (error) { if (started === generation) { neuralFailed = true; console.warn('[voz:tts]', JSON.stringify({ phase: 'load', message: error.message, code: error.code })); } }
+    finally { if (started === generation) warming = false; }
   }
-  function close() { generation++; neural.close(); neuralFailed = false; }
+  function close() { generation++; neural.close(); neuralFailed = false; warming = false; }
   async function check() {
     if (!env.GROQ_API_KEY) throw new Error('Falta GROQ_API_KEY.');
     await execute(env.TARS_ESPEAK_PATH || 'espeak-ng', ['--version'], { timeout: 5000, windowsHide: true });
@@ -49,8 +58,11 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     if (env.TARS_TTS_ENGINE !== 'espeak') require('./localSpeech').ttsConfig();
   }
   async function transcribe(pcm, signal) {
-    pcm = trimSpeech(pcm);
-    if (!pcm.length) return '';
+    const receivedBytes = pcm.length;
+    if (!hasSpeech(pcm)) {
+      console.info('[voz:audio]', JSON.stringify({ reason: receivedBytes ? 'below_energy_threshold' : 'empty_capture', receivedBytes }));
+      return '';
+    }
     if (now() < blockedUntil) throw new Error('Transcripción en pausa por límite del proveedor.');
     await budget.reserve({ audio: Math.max(10, Math.ceil(pcm.length / 32000)) });
     signal.throwIfAborted();
@@ -70,11 +82,12 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
       throw new Error(`Transcripción no disponible (${response.status}).`);
     }
     const data = await response.json();
+    if (typeof data.text !== 'string' || !data.text.trim()) console.info('[voz:audio]', JSON.stringify({ reason: 'empty_transcription', receivedBytes }));
     return typeof data.text === 'string' ? data.text.trim().slice(0, 800) : '';
   }
   async function synthesize(text, signal) {
     const spoken = text.replace(/https?:\/\/\S+/g, '').replace(/[*_`#<>]/g, '').slice(0, 280);
-    if (env.TARS_TTS_ENGINE !== 'espeak' && !neuralFailed) {
+    if (env.TARS_TTS_ENGINE !== 'espeak' && !neuralFailed && !warming) {
       try {
         return await neural.synthesize(spoken, signal);
       } catch (error) {

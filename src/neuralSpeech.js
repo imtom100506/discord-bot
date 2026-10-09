@@ -1,7 +1,7 @@
 const { fork } = require('node:child_process');
 
 // Un proceso por sesión. El modelo permanece caliente sin bloquear Discord.
-function createNeuralSpeech({ spawn = fork, timeoutMs = 15000 } = {}) {
+function createNeuralSpeech({ spawn = fork, timeoutMs = 15000, loadTimeoutMs = 45000 } = {}) {
   let child, ready, pending, sequence = 0;
   function close() {
     const old = child; child = undefined; ready = undefined;
@@ -19,7 +19,7 @@ function createNeuralSpeech({ spawn = fork, timeoutMs = 15000 } = {}) {
     current.stderr?.on('data', () => {});
     current.stdout?.on('data', () => {});
     ready = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { reject(new Error('Carga de voz demasiado lenta')); if (child === current) close(); }, timeoutMs);
+      const timer = setTimeout(() => { reject(new Error('Carga de voz demasiado lenta')); if (child === current) close(); }, loadTimeoutMs);
       current.on('message', msg => {
         if (msg.ready) { clearTimeout(timer); resolve(); }
         else if (pending?.id === msg.id) {

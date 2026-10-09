@@ -81,7 +81,15 @@ function fixture(overrides = {}) {
   const connection = new EventEmitter();
   connection.destroy = () => { destroyed++; };
   connection.subscribe = () => {};
-  connection.receiver = { subscribe: id => { subscriptions++; capture = new PassThrough(); return capture; } };
+  const receiving = new Map();
+  connection.receiver = { subscribe: id => {
+    if (receiving.has(id)) return receiving.get(id);
+    subscriptions++; capture = new PassThrough();
+    const input = capture;
+    receiving.set(id, input);
+    input.once('close', () => receiving.delete(id));
+    return input;
+  } };
   connection.receiver.speaking = new EventEmitter();
   const player = new EventEmitter(); player.stop = () => {}; player.play = () => {};
   const api = { joinVoiceChannel: () => connection, createAudioPlayer: () => player,
@@ -271,4 +279,32 @@ test('wake phrase alone allows the question after a short pause', async () => {
   await f.advance(1500);
   f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.from([7, 8])); await f.advance(0);
   assert.equal(answers, 1); assert.equal(f.replies.length, 1); f.voice.leave();
+});
+
+test('manual capture takes a live detector stream instead of subscribing to its destroyed cache entry', async () => {
+  const received = [];
+  const f = fixture({
+    wakeFactory: () => ({ frameLength: 2, process: () => -1, release() {} }),
+    transcribe: async pcm => { received.push(pcm); return ''; },
+  });
+  await f.voice.handle(f.ctx, 'entrar');
+  f.receiver.speaking.emit('start', 'human');
+  const live = f.capture;
+  const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+  assert.equal(live.destroyed, false); assert.equal(f.subscriptions, 1);
+  live.end(Buffer.from([7, 8, 9, 10])); await pending;
+  assert.deepEqual(received, [Buffer.from([7, 8, 9, 10])]); f.voice.leave();
+});
+
+test('light voice is available while neural model loads, then neural voice resumes', async () => {
+  let ready, neuralCalls = 0;
+  const audio = createVoiceAudio({ env: {}, neural: {
+    warm: () => new Promise(resolve => { ready = resolve; }),
+    synthesize: async () => { neuralCalls++; return Buffer.from('neural'); }, close() {},
+  }, runImpl: async () => ({ stdout: Buffer.from('light') }) });
+  const loading = audio.warm();
+  assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'light');
+  ready(); await loading;
+  assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'neural');
+  assert.equal(neuralCalls, 1); audio.close();
 });
