@@ -42,7 +42,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       max_completion_tokens: voice ? 512 : 2048, reasoning_effort: 'low', include_reasoning: false,
     });
     else body.max_tokens = voice ? 256 : 1024;
-    if (budget) await budget.reserve({ tokens: Buffer.byteLength(JSON.stringify(messages), 'utf8') + (body.max_completion_tokens || body.max_tokens) });
+    const reservation = budget ? await budget.reserve({ tokens: Buffer.byteLength(JSON.stringify(messages), 'utf8') + (body.max_completion_tokens || body.max_tokens) }) : undefined;
     signal?.throwIfAborted();
     try {
       const response = await fetchImpl(provider.url, {
@@ -52,6 +52,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       });
       // Leer el cuerpo dentro del mismo manejo de errores y timeout.
       const data = await response.json();
+      if (response.ok && data.success !== false) await reservation?.settle?.(data.usage?.total_tokens);
       if (!response.ok || data.success === false) {
         const status = response.ok ? 503 : response.status;
         if (status === 429) provider.blockedUntil = now() + retryAfter(response.headers.get('retry-after'), now());

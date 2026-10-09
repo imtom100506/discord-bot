@@ -24,24 +24,44 @@ function createUsageBudget({ store, now = Date.now, dailyRequests = 500, dailyTo
       ];
       let blocked;
       for (const [reason, records, weight, requested, limit, window] of limits) {
-        let excess = records.reduce((sum, e) => sum + weight(e), requested) - limit;
+        const used = records.reduce((sum, e) => sum + weight(e), 0);
+        let excess = used + requested - limit;
         if (excess <= 0) continue;
         let retryAfterMs = window;
         for (const entry of [...records].sort((a, b) => a.time - b.time)) {
           excess -= weight(entry);
           if (excess <= 0) { retryAfterMs = Math.max(1, entry.time + window - time); break; }
         }
-        if (!blocked || retryAfterMs > blocked.retryAfterMs) blocked = { reason, retryAfterMs };
+        if (!blocked || retryAfterMs > blocked.retryAfterMs) blocked = { reason, retryAfterMs, used, requested, limit };
       }
       if (blocked) {
+        console.info('[IA:limite]', JSON.stringify({ ...blocked, retryAt: new Date(time + blocked.retryAfterMs).toISOString() }));
+        const minutes = Math.ceil(blocked.retryAfterMs / 60000);
         const message = blocked.retryAfterMs <= 60000
           ? 'Dame un momento; podremos seguir en menos de un minuto.'
-          : 'Necesito una pausa más larga. Podemos retomar más tarde.';
+          : `Necesito una pausa. Prueba de nuevo en unos ${minutes} minutos.`;
         throw Object.assign(new Error(message), { code: 'AI_BUDGET', ...blocked });
       }
-      const next = [...entries, { time, tokens, audio }];
+      const entry = { time, tokens, audio };
+      const next = [...entries, entry];
       await store.write(JSON.stringify(next));
       entries = next;
+      let settled = false;
+      return { settle(actualTokens) {
+        if (!Number.isSafeInteger(actualTokens) || actualTokens <= 0 || !tokens) return Promise.resolve();
+        const update = queue.then(async () => {
+          if (settled || !entries.includes(entry)) return;
+          const adjusted = { ...entry, tokens: actualTokens };
+          const updated = entries.map(e => e === entry ? adjusted : e);
+          await store.write(JSON.stringify(updated));
+          entries = updated; settled = true;
+        }).catch(() => {
+          // Una respuesta útil sigue siendo entregable; conservar la reserva si falla el registro.
+          console.warn('[IA:cuota] No se pudo ajustar el consumo; se conserva la reserva.');
+        });
+        queue = update;
+        return update;
+      } };
     });
     const safe = task.catch(error => {
       if (error.code === 'AI_BUDGET') throw error;

@@ -23,6 +23,14 @@ test('voice uses compact prompt and generation budget without retry storms', asy
   assert.ok(requests[0].messages[0].content.length < 400);
 });
 
+test('provider usage settles the reservation before delivering a response', async () => {
+  const usage = [];
+  const ai = make(async () => new Response(JSON.stringify({ usage: { total_tokens: 150 }, choices: [{ message: { content: 'Hola.' }, finish_reason: 'stop' }] })));
+  ai.setBudget({ reserve: async () => ({ settle: async value => usage.push(value) }) });
+  assert.equal(await ai.askAI('u', 'hola', { voice: true }), 'Hola.');
+  assert.deepEqual(usage, [150]);
+});
+
 test('cancelled voice request uses no provider calls or reservations', async () => {
   let calls = 0, reservations = 0;
   const ai = make(async () => { calls++; return ok('Hola.'); });

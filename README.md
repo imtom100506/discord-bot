@@ -22,6 +22,10 @@ Con voz habilitada, el registro privado de Discord conserva los límites interno
 500 intentos de API, 100.000 tokens estimados y 3.600 segundos de audio por 24 horas
 móviles. Se permiten 6 transcripciones y 6 respuestas por minuto, separadamente.
 Cada intento se guarda antes de llamar al proveedor; los fallos también cuentan.
+Cuando el proveedor informa `usage.total_tokens`, la reserva de tokens se ajusta
+al consumo real. Sin ese dato se conserva la estimación. Los registros antiguos
+no se rebajan porque no hay evidencia de su consumo real. `[IA:limite]` muestra
+el tope alcanzado, uso, reserva solicitada y fecha UTC de recuperación.
 El audio reserva al menos 10 segundos por llamada. No borres el registro de cuota.
 Estos topes son preventivos; los límites reales de cada proveedor siguen aplicando.
 Mantén las cuentas en el plan gratuito: el bot no modifica la facturación.

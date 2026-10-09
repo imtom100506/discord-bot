@@ -33,3 +33,26 @@ test('failed writes and invalid reservations never create usage entries', async 
   await assert.rejects(budget.reserve(), { reason: 'storage' });
   assert.equal(writes, 1);
 });
+
+test('actual tokens replace estimates durably without resetting request or audio counts', async () => {
+  let saved;
+  const store = { read: async () => saved, write: async s => { saved = s; } };
+  const budget = createUsageBudget({ store, now: () => 1000, dailyTokens: 1000 });
+  const receipt = await budget.reserve({ tokens: 900 });
+  await assert.rejects(budget.reserve({ tokens: 200 }), { reason: 'tokens_day' });
+  await Promise.all([receipt.settle(100), budget.reserve({ audio: 10 })]);
+  await receipt.settle(1);
+  const restarted = createUsageBudget({ store, now: () => 1000, dailyTokens: 1000 });
+  await restarted.reserve({ tokens: 900 });
+  assert.deepEqual(JSON.parse(saved).map(e => [e.tokens, e.audio]), [[100, 0], [0, 10], [900, 0]]);
+});
+
+test('missing usage and failed settlement keep the conservative reservation', async () => {
+  let saved, fail = false;
+  const budget = createUsageBudget({ store: { read: async () => saved, write: async s => { if (fail) throw Error(); saved = s; } } });
+  const receipt = await budget.reserve({ tokens: 900 });
+  for (const usage of [undefined, NaN, -1, 0, 1.5]) await receipt.settle(usage);
+  assert.equal(JSON.parse(saved)[0].tokens, 900);
+  fail = true; await receipt.settle(100);
+  assert.equal(JSON.parse(saved)[0].tokens, 900);
+});
