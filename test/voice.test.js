@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { createVoice, IDLE_MS, MAX_AUDIO_BYTES } = require('../src/voice');
+const { createVoice, IDLE_MS, FOLLOWUP_MS, MAX_AUDIO_BYTES } = require('../src/voice');
 const { createUsageBudget } = require('../src/usageBudget');
 const { wav, createVoiceAudio } = require('../src/voiceAudio');
 
@@ -72,19 +72,20 @@ function fixture(overrides = {}) {
   const connection = new EventEmitter();
   connection.destroy = () => { destroyed++; };
   connection.subscribe = () => {};
-  connection.receiver = { subscribe: id => { assert.equal(id, 'human'); subscriptions++; capture = new PassThrough(); return capture; } };
+  connection.receiver = { subscribe: id => { subscriptions++; capture = new PassThrough(); return capture; } };
   connection.receiver.speaking = new EventEmitter();
   const player = new EventEmitter(); player.stop = () => {}; player.play = () => {};
   const api = { joinVoiceChannel: () => connection, createAudioPlayer: () => player,
-    entersState: async () => {}, VoiceConnectionStatus: { Ready: 'ready', Disconnected: 'disconnected' },
+    createAudioResource: () => ({ playStream: new PassThrough() }), StreamType: { Arbitrary: 'arbitrary' },
+    entersState: overrides.entersState || (async () => {}), VoiceConnectionStatus: { Ready: 'ready', Disconnected: 'disconnected' },
     AudioPlayerStatus: { Playing: 'playing', Idle: 'idle' }, EndBehaviorType: { AfterSilence: 1 } };
   const guild = { id: 'guild', members: { fetch: async () => ({ voice: { channel } }), me: {} } };
   const channel = { id: 'voice', type: 2, guild, permissionsFor: () => ({ has: () => true }), members: new Map([['human', { user: { bot: false } }]]) };
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
   const voice = createVoice({ enabled: true, client: { user: { id: 'bot' } }, api,
     wakeFactory: overrides.wakeFactory,
-    askAI: async () => { throw Error('not expected'); }, decoderFactory: () => new PassThrough(),
-    audio: { check: async () => {}, transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
+    askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
+    audio: { check: async () => {}, synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
     clearTimer: timer => timers.delete(timer) });
   async function advance(ms) {
@@ -96,7 +97,7 @@ function fixture(overrides = {}) {
     get subscriptions() { return subscriptions; }, get transcriptions() { return transcriptions; } };
 }
 
-test('no background reception and leaves at ten minutes', async () => {
+test('no background reception and leaves at five minutes', async () => {
   const f = fixture(); await f.voice.handle(f.ctx, 'entrar');
   assert.equal(f.subscriptions, 0);
   await f.advance(IDLE_MS - 1); assert.equal(f.destroyed, 0);
@@ -120,12 +121,10 @@ test('capture is bounded and silence releases receiver', async () => {
   await new Promise(resolve => setImmediate(resolve));
   f.capture.end(Buffer.alloc(MAX_AUDIO_BYTES + 100)); await pending;
   assert.equal(f.transcriptions, 1); assert.ok(f.capture.destroyed);
-  await f.voice.handle(f.ctx, 'escuchar');
-  assert.equal(f.subscriptions, 1); // cooldown does not capture or reset idle
   await f.advance(IDLE_MS); assert.equal(f.destroyed, 1);
 });
 
-test('inactivity waits for the in-flight response then disconnects', async () => {
+test('inactivity disconnects even during a stalled response', async () => {
   let finish;
   const f = fixture({ transcribe: () => new Promise(resolve => { finish = resolve; }) });
   await f.voice.handle(f.ctx, 'entrar');
@@ -134,7 +133,7 @@ test('inactivity waits for the in-flight response then disconnects', async () =>
   f.capture.end(Buffer.alloc(16000));
   await new Promise(resolve => setImmediate(resolve));
   await f.advance(IDLE_MS);
-  assert.equal(f.destroyed, 0);
+  assert.equal(f.destroyed, 1);
   finish(''); await pending;
   assert.equal(f.destroyed, 1);
 });
@@ -147,13 +146,15 @@ test('empty channel disconnects immediately', async () => {
   assert.equal(f.destroyed, 1);
 });
 
-test('wake mode has a fixed deadline even during a manual capture', async () => {
+test('wake mode resets inactivity on a manual invocation', async () => {
   const f = fixture({ wakeFactory: () => ({ release() {} }) });
   await f.voice.handle(f.ctx, 'entrar');
   await f.advance(IDLE_MS - 1000);
   const pending = f.voice.handle(f.ctx, 'escuchar');
   await new Promise(resolve => setImmediate(resolve));
-  await f.advance(1000); await pending;
+  await f.advance(1000);
+  assert.equal(f.destroyed, 0);
+  await f.advance(IDLE_MS); await pending;
   assert.equal(f.destroyed, 1);
   assert.equal(f.transcriptions, 0);
 });
@@ -184,4 +185,35 @@ test('wake transfers only post-activation audio into the single question pipelin
   assert.deepEqual(pcm, [Buffer.from([7, 8, 9, 10])]);
   f.voice.leave();
   assert.equal(f.receiver.speaking.listenerCount('start'), 0);
+});
+
+test('wake and followup renew inactivity; followup expires and excludes other speakers', async () => {
+  const pcm = [];
+  const f = fixture({
+    wakeFactory: () => ({ frameLength: 2, process: frame => frame[0] === 42 ? 0 : -1, release() {} }),
+    transcribe: async data => { pcm.push(data); return 'Pregunta'; },
+    askAI: async () => 'Respuesta breve.',
+  });
+  await f.voice.handle(f.ctx, 'entrar');
+  assert.equal(f.replies[0], 'En línea. Di "Hey TARS" y tu consulta. Sesión activa mientras conversemos; se cerrará tras 5 minutos de inactividad.');
+  await f.advance(IDLE_MS - 1000);
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.from([42, 0, 0, 0, 7, 8]));
+  await f.advance(0);
+  assert.equal(pcm.length, 1);
+  await f.advance(2000); assert.equal(f.destroyed, 0);
+  const member = await f.ctx.guild.members.fetch();
+  member.voice.channel.members.set('other', { user: { bot: false } });
+  f.receiver.speaking.emit('start', 'other');
+  f.capture.end(Buffer.alloc(8)); await f.advance(0);
+  assert.equal(pcm.length, 1);
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.from([7, 8, 9, 10])); await f.advance(0);
+  assert.deepEqual(pcm[1], Buffer.from([7, 8, 9, 10]));
+  await f.advance(FOLLOWUP_MS);
+  f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.alloc(8)); await f.advance(0);
+  assert.equal(pcm.length, 2);
+  await f.advance(IDLE_MS - FOLLOWUP_MS - 1); assert.equal(f.destroyed, 0);
+  await f.advance(1); assert.equal(f.destroyed, 1);
 });

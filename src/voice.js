@@ -1,6 +1,7 @@
 const { Readable } = require('node:stream');
 const { startWakeListener } = require('./wakeListener');
-const IDLE_MS = 10 * 60 * 1000;
+const IDLE_MS = 5 * 60 * 1000;
+const FOLLOWUP_MS = 8000;
 const MAX_AUDIO_BYTES = 12 * 32000;
 
 function createVoice({ client, askAI, audio, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
@@ -27,13 +28,8 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     clearTimer(s.idleTimer);
     s.idleTimer = setTimer(() => {
       if (s.closed) return;
-      if (s.fixedDeadline) {
-        void tell(s, 'Terminó mi sesión de 10 minutos. Usa /entrar para invitarme otra vez.');
-        return leave(s);
-      }
       if (now() - s.lastCall < IDLE_MS) return schedule(s);
-      if (s.busy) { s.expired = true; return; }
-      void tell(s, 'Me retiro: pasaron 10 minutos sin llamados. Usa /entrar para invitarme otra vez.');
+      void tell(s, 'Me retiro: pasaron 5 minutos sin llamados. Usa /entrar para invitarme otra vez.');
       leave(s);
     }, Math.max(1, IDLE_MS - (now() - s.lastCall)));
     s.idleTimer?.unref?.();
@@ -56,7 +52,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
         const connection = api.joinVoiceChannel({ channelId: channel.id, guildId: ctx.guild.id,
           adapterCreator: ctx.guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
         s = { connection, player: api.createAudioPlayer(), channel: ctx.channel, voiceChannel: channel,
-          lastCall: now(), nextCall: 0, abort: new AbortController(), closed: false, busy: false };
+          lastCall: now(), followupUntil: 0, abort: new AbortController(), closed: false, busy: false };
         session = s;
         s.player.on('error', () => { void tell(s, 'Falló la reproducción de voz. Me desconecto; puedes usar /entrar para reintentar.'); leave(s); });
         connection.on('error', () => leave(s));
@@ -70,14 +66,14 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
           try {
             // Comprobar el modelo antes de anunciar que la activación funciona.
             const detector = wakeFactory(); detector.release();
-            s.fixedDeadline = true;
             s.wake = startWakeListener({ receiver: connection.receiver, api, decoderFactory,
-              detectorFactory: wakeFactory, setTimer, clearTimer,
-              eligible: id => !s.closed && !s.busy && now() >= s.nextCall &&
+              detectorFactory: wakeFactory, setTimer, clearTimer, now,
+              followupEligible: id => id === s.followupUser && now() < s.followupUntil,
+              eligible: id => !s.closed && !s.busy &&
                 s.voiceChannel.members.has(id) && !s.voiceChannel.members.get(id).user.bot,
               onWake: (id, source) => { void respond(s, id, source); },
               onError: event => {
-                if (event.fatal) void tell(s, 'No puedo continuar detectando Hey TARS. Usa /escuchar; la sesión conserva su límite de 10 minutos.');
+                if (event.fatal) void tell(s, 'No puedo continuar detectando Hey TARS. Usa /escuchar; saldré tras 5 minutos de inactividad.');
               },
             });
           } catch {
@@ -86,15 +82,15 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
         }
         connection.subscribe(s.player); schedule(s);
         void audio.warm?.();
-        if (s.fixedDeadline) return await ctx.reply('Conectado por 10 minutos fijos. Di «Hey TARS» seguido de tu pregunta en la misma frase. Detecto la activación localmente; solo la pregunta se envía a Groq. Atiendo hasta dos hablantes simultáneos y no escucho mientras respondo. /escuchar también funciona.');
-        return await ctx.reply('Conectado. Usa /escuchar y luego habla: capturo solo tu pregunta, hasta 12 segundos. Se envía a Groq para transcribirla; no guardo audio. Salgo tras 10 minutos sin llamados.');
+        if (s.wake) return await ctx.reply('En línea. Di "Hey TARS" y tu consulta. Sesión activa mientras conversemos; se cerrará tras 5 minutos de inactividad.');
+        return await ctx.reply('En línea. Usa /escuchar y habla. Me retiraré tras 5 minutos de inactividad.');
       } catch (error) { leave(s); throw error; }
       finally { joining = false; }
     }
     const s = session;
     if (!s || s.voiceChannel.id !== channel.id) return ctx.reply('Debes estar en mi canal. Usa /entrar si todavía no estoy conectado.');
     if (command === 'salir') { leave(s); return ctx.reply('Desconectado del canal de voz.'); }
-    if (s.busy || now() < s.nextCall) return ctx.reply('Espera a que termine y deja 20 segundos entre llamados.');
+    if (s.busy) return ctx.reply('Espera a que termine de responder.');
     return respond(s, ctx.user.id, undefined, ctx);
   }
   async function respond(s, userId, source, ctx) {
@@ -103,8 +99,9 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
     const mark = key => { timings[key] = now() - stage; stage = now(); };
     s.busy = true;
     s.wake?.pause();
-    if (!s.fixedDeadline) { s.lastCall = now(); s.expired = false; schedule(s); }
-    s.nextCall = now() + 20000;
+    s.lastCall = now(); schedule(s);
+    s.followupUntil = 0;
+    let answered = false;
     try {
       // Se suscribe ANTES del aviso para no perder el inicio de la pregunta.
       const captured = capture(s, userId, source);
@@ -126,13 +123,15 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       s.player.play(s.resource);
       await api.entersState(s.player, api.AudioPlayerStatus.Playing, 10000);
       await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
+      answered = true;
     } catch (error) {
       if (!s.closed) await tell(s, error.code === 'AI_BUDGET' ? error.message : 'No pude completar la respuesta de voz. No reintentaré automáticamente.');
     } finally {
       console.info('[voz:tiempos]', JSON.stringify({ ...timings, total_ms: now() - started }));
       s.cancelCapture?.(); s.resource?.playStream.destroy(); s.resource = undefined;
       s.player.stop(true); s.busy = false;
-      if (!s.closed && (s.expired || now() - s.lastCall >= IDLE_MS)) leave(s);
+      if (!s.closed && now() - s.lastCall >= IDLE_MS) leave(s);
+      if (!s.closed && answered) { s.followupUser = userId; s.followupUntil = now() + FOLLOWUP_MS; }
     }
   }
   function capture(s, userId, source) {
@@ -168,4 +167,4 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
   }
   return { handle, leave, onVoiceState };
 }
-module.exports = { createVoice, IDLE_MS, MAX_AUDIO_BYTES };
+module.exports = { createVoice, IDLE_MS, FOLLOWUP_MS, MAX_AUDIO_BYTES };

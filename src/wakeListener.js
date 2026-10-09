@@ -2,7 +2,7 @@ const { createWakeFactory } = require('./localSpeech');
 
 // Dos hablantes simultáneos como máximo. Nunca mezcla audio entre usuarios.
 function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eligible, onWake, onError,
-  setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now }) {
+  setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now, followupEligible = () => false }) {
   const active = new Map();
   let stopped = false;
   let failures = [];
@@ -17,6 +17,8 @@ function startWakeListener({ receiver, api, decoderFactory, detectorFactory, eli
   }
   function start(userId) {
     if (stopped || active.has(userId) || active.size >= 2 || !eligible(userId)) return;
+    // La continuación solo se abre para el interlocutor anterior.
+    if (followupEligible(userId)) { onWake(userId); return; }
     let engine, input, decoder, timer, ended = false, pending = Buffer.alloc(0);
     function cleanup(transfer = false) {
       if (ended) return;

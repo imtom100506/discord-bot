@@ -23,7 +23,7 @@ La voz neural necesita los modelos que descarga automáticamente el Dockerfile.
 4. En voz necesita Ver canal, Conectar y Hablar. El canal desde donde ejecutas
    comandos debe permitir enviar mensajes a TARS. No admite escenarios Stage.
 5. Despliega, usa `/entrar`, `/escuchar` y haz una pregunta. Comprueba la respuesta
-   audible y `/salir`. Luego comprueba la salida tras 10 minutos sin invocaciones.
+   audible y `/salir`. Luego comprueba la salida tras 5 minutos sin invocaciones.
    No se ha verificado aquí la conexión UDP/DAVE real desde tu servicio Render.
 
 La imagen instala ffmpeg y eSpeak NG. `npm ci` por sí solo en el runtime Node de
@@ -34,7 +34,7 @@ garantía oficial de estabilidad.
 
 ## Límites deliberados
 
-- Un canal en todo el proceso, una pregunta a la vez, 20 segundos entre llamados.
+- Un canal en todo el proceso, una pregunta a la vez, sin pausa fija entre turnos.
 - Captura PCM mono a 16 kHz: máximo 384 KB por pregunta. Silencio o audio muy breve
   se descartan antes de la API (filtro de energía, no reconocimiento de voz).
 - Una transcripción por pregunta; sin reintentos automáticos. Respeta 429.
@@ -44,9 +44,8 @@ garantía oficial de estabilidad.
   El modo manual no activa el detector de palabra clave.
   Al salir se cancelan captura, transcripción, síntesis y reproducción.
   Una respuesta de texto ya en curso puede terminar, pero no se reproduce fuera.
-- 10 minutos desde `/entrar` o el último `/escuchar` aceptado. La conversación
-  ambiente y comandos rechazados no reinician el plazo. Termina una respuesta
-  en curso antes de salir. También sale si el canal queda sin humanos.
+- 5 minutos desde `/entrar` o el último `/escuchar` aceptado. La conversación
+  ambiente y comandos rechazados no reinician el plazo. Al vencer el plazo se desconecta incluso si hay una respuesta en curso. También sale si el canal queda sin humanos.
 - Con voz habilitada, texto y voz comparten un presupuesto de **100 intentos de
   API, 100.000 tokens estimados y 1.200 segundos de audio en 24 horas móviles**;
   máximo 6 intentos/minuto. Una pregunta usual usa dos intentos: transcripción

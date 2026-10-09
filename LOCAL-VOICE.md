@@ -20,7 +20,10 @@ No se llama a Picovoice. Todas las dependencias se fijan en package-lock.json.
 
 ## Uso y límites
 
-`/entrar` abre una sesión de diez minutos fijos, aunque sigas haciendo preguntas.
+`/entrar` abre una sesión con salida tras cinco minutos de inactividad. Cada
+activación, `/escuchar` o continuación aceptada reinicia el plazo. Tras responder,
+escucha durante ocho segundos al mismo interlocutor sin exigir «Hey TARS».
+Pasada esa ventana, vuelve a exigir la frase. No se envía audio por esperar.
 Di «Hey TARS» con pronunciación aproximada «jei tars», seguido de la pregunta,
 sin dejar una pausa de un segundo. La detección usa un modelo inglés/chino y
 fonemas ingleses; no se garantiza reconocimiento del acento español/chileno.
@@ -28,8 +31,8 @@ Solo la pregunta posterior a la activación va a Groq. Una activación falsa pue
 consumir cuota; no existe garantía de cero errores con cualquier detector.
 
 Un solo modelo pequeño compartido, un hilo de CPU, dos hablantes simultáneos
-como máximo. No escucha mientras responde ni durante la pausa de 20 segundos
-entre preguntas. Intervenciones continuas de más de 30 segundos se interrumpen:
+como máximo. No escucha mientras responde. No hay pausa obligatoria entre preguntas;
+los presupuestos y límites del proveedor siguen vigentes. Intervenciones continuas de más de 30 segundos se interrumpen:
 hay que hacer una pausa antes de invocarlo de nuevo. Las preguntas conservan el
 tope de 12 segundos. `/escuchar` y `/salir` siguen disponibles.
 
@@ -46,7 +49,7 @@ guardándose antes de cada llamada. La síntesis y la detección no usan Groq.
 
 Los errores aislados de recepción o decodificación descartan esa intervención
 sin apagar toda la escucha. Tres errores en 30 segundos, o un error del modelo,
-desactivan la detección y dejan disponible `/escuchar` hasta terminar la sesión.
+desactivan la detección y dejan disponible `/escuchar` hasta terminar la sesión por inactividad.
 Los logs `[voz:detector]` indican origen y detalle; `[voz:tiempos]` registra los
 milisegundos de captura, transcripción, respuesta y síntesis, sin el texto hablado.
 El total incluye reproducción. Para diagnosticar Render, revisar estas líneas
@@ -82,7 +85,7 @@ TARS_WAKE_ENABLED=false
 TARS_TTS_ENGINE=espeak
 ```
 
-Guardar y redesplegar restaura `/escuchar`, diez minutos de inactividad y voz
+Guardar y redesplegar restaura `/escuchar`, cinco minutos de inactividad y voz
 ligera. También puedes apagar solo la detección o cambiar solo la voz.
 
 ## Fuentes
