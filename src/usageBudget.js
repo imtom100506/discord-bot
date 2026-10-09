@@ -70,6 +70,12 @@ function createUsageBudget({ store, now = Date.now, dailyRequests = 500, dailyTo
     queue = safe.catch(() => {});
     return safe;
   }
-  return { reserve };
+  function status() {
+    const used = entries ? entries.filter(e => now() - e.time < 86400000).reduce((sum, e) => sum + e.tokens, 0) : null;
+    return { alcance: 'limite_interno_24h', tokens_restantes: used === null ? null : Math.max(0, dailyTokens - used),
+      tokens_contabilizados: used, limite_tokens: dailyTokens };
+  }
+  function logStatus() { console.info('[IA:saldo]', JSON.stringify(status())); }
+  return { reserve, status, logStatus };
 }
 module.exports = { createUsageBudget };

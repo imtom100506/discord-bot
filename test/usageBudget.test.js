@@ -56,3 +56,15 @@ test('missing usage and failed settlement keep the conservative reservation', as
   fail = true; await receipt.settle(100);
   assert.equal(JSON.parse(saved)[0].tokens, 900);
 });
+
+test('balance reflects reservations, actual usage and rolling expiry; unknown is not zero', async () => {
+  let time = 0;
+  const budget = createUsageBudget({ now: () => time, dailyTokens: 1000, store: { read: async () => null, write: async () => {} } });
+  assert.equal(budget.status().tokens_restantes, null);
+  const receipt = await budget.reserve({ tokens: 800 });
+  assert.equal(budget.status().tokens_restantes, 200);
+  await receipt.settle(100);
+  assert.equal(budget.status().tokens_restantes, 900);
+  time = 86400000;
+  assert.equal(budget.status().tokens_restantes, 1000);
+});

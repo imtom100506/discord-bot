@@ -91,7 +91,14 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
   }
 
   function askAI(userId, userMessage, { context = '', brief = false, voice = false, signal } = {}) {
-    if (pending >= 8) return Promise.reject(Object.assign(new Error('Cola de IA llena.'), { code: 'AI_BUSY' }));
+    const logBalance = () => {
+      if (budget?.logStatus) budget.logStatus();
+      else console.info('[IA:saldo]', JSON.stringify({ alcance: 'limite_interno_24h', tokens_restantes: null, estado: 'sin_registro' }));
+    };
+    if (pending >= 8) {
+      logBalance();
+      return Promise.reject(Object.assign(new Error('Cola de IA llena.'), { code: 'AI_BUSY' }));
+    }
     pending++;
     const enqueued = now();
     const task = queue.then(async () => {
@@ -119,7 +126,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
         histories.set(userId, updated);
       }
       return reply;
-    });
+    }).finally(logBalance);
     queue = task.catch(() => {}).finally(() => { pending--; });
     return task;
   }

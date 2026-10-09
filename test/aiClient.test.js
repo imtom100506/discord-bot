@@ -31,6 +31,20 @@ test('provider usage settles the reservation before delivering a response', asyn
   assert.deepEqual(usage, [150]);
 });
 
+test('balance is logged once after settlement and after blocked requests', async () => {
+  const events = []; let blocked = false;
+  const ai = make(async () => new Response(JSON.stringify({ usage: { total_tokens: 150 }, choices: [{ message: { content: 'Hola.' }, finish_reason: 'stop' }] })));
+  ai.setBudget({ reserve: async () => {
+    if (blocked) throw Object.assign(Error('pausa'), { code: 'AI_BUDGET' });
+    return { settle: async () => events.push('settle') };
+  }, logStatus: () => events.push('balance') });
+  await ai.askAI('u', 'hola', { voice: true });
+  assert.deepEqual(events, ['settle', 'balance']);
+  blocked = true;
+  await assert.rejects(ai.askAI('u', 'otra', { voice: true }), { code: 'AI_BUDGET' });
+  assert.deepEqual(events, ['settle', 'balance', 'balance']);
+});
+
 test('cancelled voice request uses no provider calls or reservations', async () => {
   let calls = 0, reservations = 0;
   const ai = make(async () => { calls++; return ok('Hola.'); });

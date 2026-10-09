@@ -26,6 +26,11 @@ Cuando el proveedor informa `usage.total_tokens`, la reserva de tokens se ajusta
 al consumo real. Sin ese dato se conserva la estimación. Los registros antiguos
 no se rebajan porque no hay evidencia de su consumo real. `[IA:limite]` muestra
 el tope alcanzado, uso, reserva solicitada y fecha UTC de recuperación.
+Después de cada consulta de IA, `[IA:saldo]` muestra `tokens_restantes`,
+`tokens_contabilizados` y `limite_tokens` del límite interno de 24 horas móviles.
+Incluye errores y bloqueos. Usa el consumo real si está disponible y reservas
+conservadoras en los demás casos. No es el saldo de la cuenta Groq; `null` indica
+que el registro no está disponible o todavía no se ha cargado.
 El audio reserva al menos 10 segundos por llamada. No borres el registro de cuota.
 Estos topes son preventivos; los límites reales de cada proveedor siguen aplicando.
 Mantén las cuentas en el plan gratuito: el bot no modifica la facturación.
