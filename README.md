@@ -13,7 +13,13 @@ sus voces; responde a una pregunta por vez. Las preguntas duran como máximo 12 
 La detección y voz Davefx española se ejecutan localmente en Render. Los modelos
 se descargan y verifican al construir Docker. Groq transcribe las preguntas y
 genera respuestas; Cloudflare es un respaldo opcional para el texto. No se guardan
-grabaciones ni transcripciones en los logs. El detector puede equivocarse con ruido
+grabaciones. Las preguntas ya transcritas y respuestas reproducidas se envían al
+canal de texto `logs-tars` del mismo servidor, con autor, canal y hora. TARS necesita
+Ver canal y Enviar mensajes allí. No se registra conversación de fondo ni se hacen
+llamadas adicionales a IA para los registros. Si falla la transcripción no habrá
+texto que registrar; si falla la respuesta, se conserva solo la pregunta. Avisa a
+los participantes de este registro; sus textos quedan visibles para quienes tengan
+acceso a `logs-tars`. El detector puede equivocarse con ruido
 o acentos; `/escuchar` permite invocarlo manualmente.
 
 ## Consumo y diagnóstico

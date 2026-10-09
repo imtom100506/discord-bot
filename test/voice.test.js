@@ -101,6 +101,7 @@ function fixture(overrides = {}) {
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
   const voice = createVoice({ enabled: true, client: { user: { id: 'bot' } }, api,
     wakeFactory: overrides.wakeFactory,
+    recordConversation: overrides.recordConversation,
     askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
     audio: { check: async () => {}, synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
@@ -307,4 +308,17 @@ test('light voice is available while neural model loads, then neural voice resum
   ready(); await loading;
   assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'neural');
   assert.equal(neuralCalls, 1); audio.close();
+});
+
+test('conversation log reuses existing text even when answering is blocked', async () => {
+  const records = []; let calls = 0;
+  const f = fixture({ recordConversation: item => records.push(item), transcribe: async () => 'Hola',
+    askAI: async () => { if (++calls === 2) throw Object.assign(Error('Pausa'), { code: 'AI_BUDGET' }); return 'En línea.'; } });
+  await f.voice.handle(f.ctx, 'entrar');
+  for (let i = 0; i < 2; i++) {
+    const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+    f.capture.end(Buffer.alloc(16000)); await pending; await f.advance(0);
+  }
+  assert.deepEqual(records.map(item => [item.role, item.text]), [['user', 'Hola'], ['assistant', 'En línea.'], ['user', 'Hola']]);
+  assert.equal(calls, 2); f.voice.leave();
 });

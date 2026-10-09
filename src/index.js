@@ -12,6 +12,7 @@ const { createUsageBudget } = require("./usageBudget");
 const { createVoiceAudio } = require("./voiceAudio");
 const { createVoice } = require("./voice");
 const { createWakeFactory } = require('./wakeListener');
+const { createVoiceLog } = require('./voiceLog');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
@@ -29,7 +30,7 @@ const voiceEnabled = process.env.TARS_VOICE_ENABLED === 'true';
 const budget = createUsageBudget({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
   global.fetch, 'TARS · Presupuesto IA · No borrar', 'tars-usage.json') : undefined });
 if (voiceEnabled) setBudget(budget);
-const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory() });
+const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client) });
 client.on('voiceStateUpdate', (oldState, newState) => voice.onVoiceState(oldState, newState));
 process.once('SIGTERM', () => { voice.leave(); client.destroy(); process.exit(0); });
 process.once('SIGINT', () => { voice.leave(); client.destroy(); process.exit(0); });

@@ -4,7 +4,7 @@ const IDLE_MS = 5 * 60 * 1000;
 const FOLLOWUP_MS = 8000;
 const MAX_AUDIO_BYTES = 12 * 32000;
 
-function createVoice({ client, askAI, audio, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
+function createVoice({ client, askAI, audio, recordConversation = () => {}, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   let session, joining = false;
   const load = () => {
@@ -123,6 +123,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
         return;
       }
       if (followup) { s.lastCall = now(); schedule(s); }
+      recordConversation({ guildId: s.voiceChannel.guild.id, channelId: s.voiceChannel.id, userId, role: 'user', text: question });
       const reply = await askAI(userId, question, { voice: true, signal: s.abort.signal });
       mark('respuesta_ms');
       if (s.closed) return;
@@ -133,6 +134,7 @@ function createVoice({ client, askAI, audio, enabled = false, api, decoderFactor
       s.player.play(s.resource);
       await api.entersState(s.player, api.AudioPlayerStatus.Playing, 10000);
       await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
+      if (!s.closed) recordConversation({ guildId: s.voiceChannel.guild.id, channelId: s.voiceChannel.id, userId, role: 'assistant', text: reply });
       answered = true;
     } catch (error) {
       console.warn('[voz:error]', JSON.stringify({ stage: timings.respuesta_ms !== undefined ? 'synthesis_or_playback' : timings.transcripcion_ms !== undefined ? 'response' : 'capture_or_transcription', name: error.name, code: error.code, signal: error.signal }));
