@@ -1,4 +1,4 @@
-const VOICE_ROLES = ["Líder Supremo", "Sigma"];
+const VOICE_ROLES = ["Líder", "Sigma"];
 const HELP = "**Comandos disponibles:**\n" +
   "`/entrar`, `/escuchar`, `/salir` (también con !) — Voz si está habilitada; preguntas de hasta 12 segundos. Salida tras 5 minutos de inactividad. Hey TARS, si está configurado: 8 segundos para continuar tras cada respuesta\n" +
   "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
