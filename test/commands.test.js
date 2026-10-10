@@ -47,7 +47,7 @@ function bot() {
       if (name === "./textMute") return { createTextMutes: () => ({ mute: async (...args) => muteCalls.push(args) }) };
       if (name === "./muteStore") return require("../src/muteStore");
       if (name === "./boundedMap") return require("../src/boundedMap");
-      if (["./usageBudget", "./voiceAudio", "./voice", "./wakeListener", "./voiceLog"].includes(name)) return require(`../src/${name.slice(2)}`);
+      if (["./usageBudget", "./voiceAudio", "./voice", "./wakeListener", "./voiceLog", "./deleteMessages"].includes(name)) return require(`../src/${name.slice(2)}`);
       throw new Error(name);
     },
     process: { env: {}, on() {}, once() {}, exit() { throw new Error("Unexpected exit"); } }, console,
@@ -97,6 +97,19 @@ test("slash and prefix reject invalid summaries before fetching messages", async
   assert.equal(aiCalls.length, 0);
 });
 
+test('prefix deletion and its confirmation bypass AI and use the requesting member only', async () => {
+  const { client, aiCalls } = bot(); const replies = [], deleted = [];
+  const rows = new Map(Array.from({ length: 60 }, (_, i) => [String(i), { id: String(i), createdTimestamp: Date.now() - 1000, author: { id: 'human' } }]));
+  const channel = { id: 'deletion-test', messages: { fetch: async () => rows }, permissionsFor: () => ({ has: () => true }),
+    bulkDelete: async ids => { deleted.push(ids); return new Map(ids.map(id => [id, rows.get(id)])); } };
+  const guild = { id: 'guild', members: { fetch: async () => ({ roles: { cache: { some: fn => fn({ name: 'Sigma' }) } } }), fetchMe: async () => ({ id: 'bot' }) } };
+  const invoke = async (content, id = 'human') => client.listeners('messageCreate')[0]({ id: 'command', content, author: { id }, guild, channel, reply: async payload => replies.push(payload) });
+  await invoke('!borrar 60'); assert.equal(deleted.length, 0);
+  await invoke('sí', 'other'); assert.equal(deleted.length, 0);
+  await invoke('sí'); assert.equal(deleted[0].length, 60); assert.equal(aiCalls.length, 0);
+  assert.match(replies.at(-1).content, /Borrados 60/);
+});
+
 test("voice disconnect checks role and never resolves a target by username", async () => {
   const { client } = bot();
   let authorized = false;
@@ -126,7 +139,7 @@ test("command questions and invented commands bypass AI and moderation", async (
     const request = interaction("tars", text, {});
     await slash(request);
     assert.match(request.replies[0].content, /!resumir/);
-    assert.match(request.replies[0].content, /Líder Supremo o Sigma/);
+    assert.match(request.replies[0].content, /Líder o Sigma/);
     assert.doesNotMatch(request.replies[0].content, /!tars ban/);
   }
   for (const text of ["analyst on", "detalle", "re‑load", "credit", "limit 2", "time @tom", "role add <@123> OG", "purge 20", "voicekick <@123>", "play Interstellar", "/play Interstellar"]) {

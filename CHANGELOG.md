@@ -1,5 +1,14 @@
 # Changelog de TARS
 
+## 2026-10-10
+
+- Entrada a voz: comprobaciones y conexión en paralelo, comprobaciones reutilizadas
+  durante el despliegue y tiempos por etapa en `[voz:entrada]`.
+- Comando sin IA `!borrar cantidad` / `!borrar @usuario cantidad`, también `/borrar`:
+  hasta 50 mensajes directamente; de 51 a 100 con confirmación del solicitante en 30 segundos.
+- Borrado restringido a Líder y Sigma con Gestionar mensajes. Protege fijados y registros
+  internos, omite mensajes antiguos y revalida permisos y selección al confirmar.
+
 ## 2026-10-09
 
 ### Conversación por voz

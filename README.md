@@ -10,6 +10,15 @@ Sale tras 5 minutos de inactividad. También admite `/escuchar` y `/salir`.
 No escucha mientras habla. Detecta hasta tres hablantes simultáneos, sin mezclar
 sus voces; responde a una pregunta por vez. Las preguntas duran como máximo 12 segundos.
 
+`!borrar 10` borra mensajes del canal; `!borrar @usuario 10` filtra por autor.
+También existe `/borrar cantidad usuario`. Cantidades de 1 a 50 se ejecutan directamente;
+de 51 a 100 requieren «sí» o «no» del solicitante en el mismo canal durante 30 segundos.
+Exige rol Líder o Sigma y permiso Gestionar mensajes, además de Ver canal/Leer historial;
+TARS también necesita esos permisos. Revisa los últimos 100 mensajes anteriores a la
+invocación; omite fijados, registros internos y mensajes de 14 días o más. Al confirmar
+revalida permisos y solo puede borrar los mensajes seleccionados originalmente.
+Este comando no usa IA ni tokens. No se realizan borrados como parte de las pruebas.
+
 La detección y voz Davefx española se ejecutan localmente en Render. Los modelos
 se descargan y verifican al construir Docker. Groq transcribe las preguntas y
 genera respuestas; Cloudflare es un respaldo opcional para el texto. No se guardan
@@ -61,5 +70,8 @@ limitada a 15 segundos por respuesta. Un paquete Opus inválido aislado se desca
 sin perder el resto de la recepción; cinco inválidos consecutivos reportan error.
 `[voz:captura]` y `[voz:audio]` distinguen capturas vacías, errores y falta de señal;
 `[voz:error]` indica la etapa que falló, sin registrar conversaciones.
+`[voz:entrada]` mide preparación, conexión, carga del detector y tiempo total de entrada.
+Las comprobaciones de programas se ejecutan en paralelo y se reutilizan durante el
+despliegue; se solapan con la conexión. El saludo solo se envía cuando TARS está listo.
 
 Referencia de límites: https://console.groq.com/docs/rate-limits

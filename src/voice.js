@@ -37,7 +37,7 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
   async function handle(ctx, command) {
     if (!enabled) return ctx.reply('La voz aún no está habilitada.');
     if (!ctx.guild) return ctx.reply('Usa este comando dentro de un servidor.');
-    const member = await ctx.guild.members.fetch(ctx.user.id);
+    const member = ctx.guild.members.cache?.get(ctx.user.id) || await ctx.guild.members.fetch(ctx.user.id);
     const channel = member.voice.channel;
     if (!channel) return ctx.reply('Primero entra a un canal de voz.');
     if (command === 'entrar') {
@@ -46,9 +46,11 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
       const permissions = channel.permissionsFor(ctx.guild.members.me);
       if (!permissions?.has(['ViewChannel', 'Connect', 'Speak'])) return ctx.reply('Necesito Ver canal, Conectar y Hablar en ese canal.');
       joining = true;
+      const started = now();
+      const timings = {};
       let s;
       try {
-        await audio.check(); load();
+        load();
         const connection = api.joinVoiceChannel({ channelId: channel.id, guildId: ctx.guild.id,
           adapterCreator: ctx.guild.voiceAdapterCreator, selfDeaf: false, selfMute: false });
         s = { connection, player: api.createAudioPlayer(), channel: ctx.channel, voiceChannel: channel,
@@ -59,10 +61,14 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
         connection.on('stateChange', (_, state) => {
           if (state.status === api.VoiceConnectionStatus.Disconnected) leave(s);
         });
-        await api.entersState(connection, api.VoiceConnectionStatus.Ready, 15000);
+        await Promise.all([
+          audio.check().then(() => { timings.preparacion_ms = now() - started; }),
+          api.entersState(connection, api.VoiceConnectionStatus.Ready, 15000).then(() => { timings.conexion_ms = now() - started; }),
+        ]);
         if (s.closed) throw new Error('Conexión de voz cerrada.');
         s.lastCall = now();
         if (wakeFactory) {
+          const detectorStarted = now();
           try {
             // Comprobar el modelo antes de anunciar que la activación funciona.
             const detector = wakeFactory(); detector.release();
@@ -79,13 +85,14 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
           } catch {
             await tell(s, 'No pude activar Hey TARS: faltan modelos locales o no pudieron cargarse. Sigo en modo /escuchar.');
           }
+          timings.detector_ms = now() - detectorStarted;
         }
         connection.subscribe(s.player); schedule(s);
         void audio.warm?.();
         if (s.wake) return await ctx.reply('En línea. Di "Hey TARS" y tu consulta. Sesión activa mientras conversemos; se cerrará tras 5 minutos de inactividad.');
         return await ctx.reply('En línea. Usa /escuchar y habla. Me retiraré tras 5 minutos de inactividad.');
       } catch (error) { leave(s); throw error; }
-      finally { joining = false; }
+      finally { joining = false; console.info('[voz:entrada]', JSON.stringify({ ...timings, total_ms: now() - started })); }
     }
     const s = session;
     if (!s || s.voiceChannel.id !== channel.id) return ctx.reply('Debes estar en mi canal. Usa /entrar si todavía no estoy conectado.');

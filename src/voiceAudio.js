@@ -51,11 +51,20 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     finally { if (started === generation) warming = false; }
   }
   function close() { generation++; neural.close(); neuralFailed = false; warming = false; }
-  async function check() {
-    if (!env.GROQ_API_KEY) throw new Error('Falta GROQ_API_KEY.');
-    await execute(env.TARS_ESPEAK_PATH || 'espeak-ng', ['--version'], { timeout: 5000, windowsHide: true });
-    await execute('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true });
-    if (env.TARS_TTS_ENGINE !== 'espeak') require('./localSpeech').ttsConfig();
+  let checked;
+  function check() {
+    // Binarios/modelos no cambian durante un despliegue: verificar una sola vez.
+    checked ||= (async () => {
+      if (!env.GROQ_API_KEY) throw new Error('Falta GROQ_API_KEY.');
+      const checks = await Promise.allSettled([
+        execute(env.TARS_ESPEAK_PATH || 'espeak-ng', ['--version'], { timeout: 5000, windowsHide: true }),
+        execute('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true }),
+      ]);
+      const failed = checks.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+      if (env.TARS_TTS_ENGINE !== 'espeak') require('./localSpeech').ttsConfig();
+    })().catch(error => { checked = undefined; throw error; });
+    return checked;
   }
   async function transcribe(pcm, signal) {
     const receivedBytes = pcm.length;

@@ -5,6 +5,7 @@ const HELP = "**Comandos disponibles:**\n" +
   "`!ayuda` o `/ayuda` — Muestra esta lista\n" +
   "`!reset` o `/reset` — Borra tu historial\n" +
   "`!ping` o `/ping` — Latencia\n" +
+  "`!borrar <cantidad>` o `!borrar @usuario <cantidad>` (también /borrar) — 1 a 100 mensajes recientes; más de 50 requiere sí/no del solicitante en 30 segundos. Líder o Sigma y Gestionar mensajes. Omite fijados y registros internos.\n" +
   "`!resumir <cantidad>` o `/resumir` — Resume entre 1 y 50 mensajes (20 por defecto)\n" +
   "`!usuarios <rol>` o `/usuarios` — Ver conectados o miembros de un rol\n" +
   `\`!tars saca a @usuario del canal de voz\` — Desconecta de voz (${VOICE_ROLES.join(" o ")})\n` +
@@ -17,13 +18,14 @@ const HELP = "**Comandos disponibles:**\n" +
 const CAPABILITIES = `Funciones reales y únicas de esta instalación de TARS:\n${HELP}
 También se reconoce "resume <cantidad>" dentro de !tars o /tars para resumir mensajes.
 La voz requiere activación en el alojamiento. /entrar conecta, /escuchar captura solo la pregunta del solicitante y /salir desconecta. Sale tras 5 minutos de inactividad; cada invocación aceptada reinicia el plazo. Con el detector local opcional reconoce «Hey TARS» y, tras responder, permite al mismo interlocutor continuar sin la frase durante 8 segundos. Cada continuación aceptada también reinicia la inactividad. El mensaje de conexión indica qué modo está activo. No prometas activación por nombre sin esa configuración.
+El borrado solo se ejecuta con !borrar o /borrar, nunca mediante IA. Examina los últimos 100 mensajes anteriores a la invocación y omite mensajes de 14 días o más. Más de 50 exige confirmación del mismo solicitante en el mismo canal.
 La desconexión de voz exige exactamente una mención de usuario y uno de los roles indicados; no expulsa del servidor.
 Mutea/mute/silencia bloquea solo mensajes, publicaciones e hilos en los canales del servidor, incluido el chat escrito de canales de voz. No afecta hablar ni conectarse a voz y no usa timeout. Duraciones enteras: segundos, minutos, horas o días; abreviaturas s/m/h/d.
 TARS restaura los permisos anteriores al vencer (revisión cada 5 segundos); si está apagado, lo hace al volver. El registro persiste en el canal de estado/logs configurado o en disco persistente.
 Mute de texto y apodos exigen uno de los roles autorizados y, respectivamente, Moderar miembros o Gestionar apodos para el solicitante. TARS necesita Gestionar roles/permisos en todos los canales para el mute o Gestionar apodos para el apodo. Ambos deben superar al objetivo en jerarquía (el dueño solicitante está exento de su propia jerarquía).
 No se modera al dueño ni a uno mismo. No se aplica mute a bots o administradores. Un timeout antiguo se retira manualmente desde Discord antes de mutear solo texto. El apodo admite 1–32 caracteres. Nunca anuncies una acción ejecutada desde la conversación de IA.
 No existen comandos analyst, detalle, re-load, credit, limit, time, ban, purge, role, voicekick ni play.
-No puedes gestionar roles, borrar canales o mensajes, banear, reproducir música, controlar otros bots ni medir tiempo conectado.
+No puedes gestionar roles, borrar canales, banear, reproducir música, controlar otros bots ni medir tiempo conectado.
 Dar permisos de Discord no añade estas funciones. No lo presentes como un problema de privilegios.
 Los ajustes de humor u honestidad son solo tono conversacional, no configuración persistente ni comandos administrativos.
 No inventes sintaxis, permisos, funciones o confirmaciones de acciones. La IA solo redacta texto; las acciones reales las ejecuta el código.

@@ -103,7 +103,7 @@ function fixture(overrides = {}) {
     wakeFactory: overrides.wakeFactory,
     recordConversation: overrides.recordConversation,
     askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
-    audio: { check: async () => {}, synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
+    audio: { check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
     clearTimer: timer => timers.delete(timer) });
   async function advance(ms) {
@@ -308,6 +308,29 @@ test('light voice is available while neural model loads, then neural voice resum
   ready(); await loading;
   assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'neural');
   assert.equal(neuralCalls, 1); audio.close();
+});
+
+test('audio dependency checks run concurrently, share a result and retry after failure', async () => {
+  const releases = []; let calls = 0;
+  const audio = createVoiceAudio({ env: { GROQ_API_KEY: 'test', TARS_TTS_ENGINE: 'espeak' },
+    runImpl: () => { calls++; return new Promise((resolve, reject) => releases.push({ resolve, reject })); } });
+  const first = audio.check(); const shared = audio.check();
+  assert.equal(first, shared); assert.equal(calls, 2);
+  releases[0].reject(Error('temporary')); releases[1].resolve();
+  await assert.rejects(first);
+  const retry = audio.check(); assert.equal(calls, 4);
+  releases[2].resolve(); releases[3].resolve(); await retry;
+  await audio.check(); assert.equal(calls, 4);
+});
+
+test('join overlaps preparation and connection and announces readiness only after both', async () => {
+  let finishCheck, finishConnect;
+  const f = fixture({ check: () => new Promise(resolve => { finishCheck = resolve; }),
+    entersState: () => new Promise(resolve => { finishConnect = resolve; }) });
+  const joining = f.voice.handle(f.ctx, 'entrar'); await f.advance(0);
+  assert.equal(typeof finishCheck, 'function'); assert.equal(typeof finishConnect, 'function');
+  finishConnect(); await f.advance(0); assert.equal(f.replies.length, 0);
+  finishCheck(); await joining; assert.match(f.replies[0], /En línea/); f.voice.leave();
 });
 
 test('conversation log reuses existing text even when answering is blocked', async () => {

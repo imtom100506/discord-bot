@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } = require("discord.js");
+const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const { askAI, clearHistory, setBudget } = require("./ai");
 const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse, appendContext } = require("./commandUtils");
@@ -13,6 +13,7 @@ const { createVoiceAudio } = require("./voiceAudio");
 const { createVoice } = require("./voice");
 const { createWakeFactory } = require('./wakeListener');
 const { createVoiceLog } = require('./voiceLog');
+const { deleteMessages, confirmDelete } = require('./deleteMessages');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages,
@@ -55,6 +56,10 @@ const commands = [
     .addStringOption(o => o.setName("mensaje").setDescription("Tu mensaje para TARS").setRequired(true)),
   new SlashCommandBuilder().setName("reset").setDescription("Borra tu historial de conversación con TARS"),
   new SlashCommandBuilder().setName("ping").setDescription("Verifica si TARS está activo"),
+  new SlashCommandBuilder().setName('borrar').setDescription('Borra mensajes recientes sin IA; más de 50 requiere confirmación')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+    .addIntegerOption(o => o.setName('cantidad').setDescription('Cantidad de mensajes (1 a 100)').setMinValue(1).setMaxValue(100).setRequired(true))
+    .addUserOption(o => o.setName('usuario').setDescription('Filtrar por usuario (opcional)')),
   new SlashCommandBuilder().setName("ayuda").setDescription("Muestra todos los comandos disponibles"),
   new SlashCommandBuilder().setName("resumir").setDescription("TARS resume los últimos mensajes del canal")
     .addIntegerOption(o => o.setName("cantidad").setDescription("Mensajes a resumir (1 a 50)").setMinValue(1).setMaxValue(50)),
@@ -151,6 +156,7 @@ async function execute(ctx, command, argument) {
     return ctx.reply("Historial borrado. Empezamos de cero.");
   }
   const text = String(argument ?? "").trim();
+  if (command === 'borrar') return deleteMessages(ctx, text, { sendLog, clearContext: id => channelContext.delete(id) });
   const moderation = command === "tars" ? parseModeration(text) : null;
   if (moderation) return moderate(ctx, moderation, sendLog, textMutes);
   const directReply = command === "tars" ? commandReply(text) : null;
@@ -207,7 +213,7 @@ client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand() || !interaction.isRepliable()) return;
   if (!commands.some(command => command.name === interaction.commandName)) return;
   const ctx = {
-    user: interaction.user, guild: interaction.guild, channel: interaction.channel,
+    user: interaction.user, guild: interaction.guild, channel: interaction.channel, messageId: interaction.id,
     reply: async text => {
       for (const chunk of splitResponse(text)) {
         const payload = { content: chunk, allowedMentions: { parse: [], repliedUser: false } };
@@ -220,7 +226,8 @@ client.on("interactionCreate", async interaction => {
   try {
     await interaction.deferReply(["reset", "ayuda"].includes(interaction.commandName) ? { flags: 64 } : {});
     void sendLog("slash", { usuario: ctx.user.username, comando: interaction.commandName, canal: ctx.channel?.name || "privado" });
-    const argument = interaction.commandName === "resumir" ? interaction.options.getInteger("cantidad") :
+    const argument = interaction.commandName === 'borrar' ? `${interaction.options.getUser('usuario') ? `<@${interaction.options.getUser('usuario').id}> ` : ''}${interaction.options.getInteger('cantidad')}` :
+      interaction.commandName === "resumir" ? interaction.options.getInteger("cantidad") :
       interaction.commandName === "usuarios" ? interaction.options.getString("rol") :
       interaction.commandName === "tars" ? interaction.options.getString("mensaje") : null;
     await execute(ctx, interaction.commandName, argument);
@@ -231,8 +238,7 @@ client.on("messageCreate", async message => {
   if (message.author.bot) return;
   const recent = channelContext.get(message.channel.id) || [];
   channelContext.set(message.channel.id, appendContext(recent, `${message.author.username}: ${message.content}`));
-  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir)(?:\s+([\s\S]*))?$/i);
-  if (!match) return;
+  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir|borrar)(?:\s+([\s\S]*))?$/i);
   const ctx = {
     user: message.author, guild: message.guild, channel: message.channel, messageId: message.id,
     reply: async text => {
@@ -242,6 +248,8 @@ client.on("messageCreate", async message => {
     },
   };
   try {
+    if (await confirmDelete(ctx, message.content, { sendLog, clearContext: id => channelContext.delete(id) })) return;
+    if (!match) return;
     if (["tars", "resumir", "usuarios"].includes(match[1].toLowerCase())) await message.channel.sendTyping();
     await execute(ctx, match[1].toLowerCase(), match[2]);
   } catch (error) { await handleError(ctx, error); }
