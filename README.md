@@ -1,77 +1,247 @@
 # TARS
 
-Bot de Discord con conversación por texto y voz. Se despliega usando el Dockerfile
-en Render; configura los secretos y opciones indicados en `.env.example`.
-No necesita una computadora personal encendida. Una sola instancia por token.
+Asistente de Discord por texto y voz inspirado en Interstellar. Node 24,
+JavaScript/CommonJS y un módulo TypeScript ejecutado directamente por Node.
+Docker instala ffmpeg, Piper y Silero VAD. Una instancia por token;
+atiende un canal de voz a la vez. Este repositorio no implementa TeamSpeak.
 
-`!entrar` / `/entrar`: di «Hey TARS» seguido de tu consulta. Después de cada respuesta
-tienes 8 segundos para continuar sin repetir la frase, solo con el mismo interlocutor.
-Sale tras 5 minutos de inactividad. También admite `/escuchar` y `/salir`.
-No escucha mientras habla. Detecta hasta tres hablantes simultáneos, sin mezclar
-sus voces; responde a una pregunta por vez. Las preguntas duran como máximo 12 segundos.
+La configuración gratuita y el diagnóstico de consistencia están en
+[VOICE.md](VOICE.md). Se usa únicamente Piper es_MX-claude INT8 y Groq Free;
+Deepgram se rechaza y no existe fallback a eSpeak. Los WAV habituales se
+pregeneran en el PC con `npm run voice:pregenerate` y se incluyen en Docker.
 
-`!borrar 10` borra mensajes del canal; `!borrar @usuario 10` filtra por autor.
-También existe `/borrar cantidad usuario`. Cantidades de 1 a 50 se ejecutan directamente;
-de 51 a 100 requieren «sí» o «no» del solicitante en el mismo canal durante 30 segundos.
-Exige rol Líder o Sigma y permiso Gestionar mensajes, además de Ver canal/Leer historial;
-TARS también necesita esos permisos. Revisa los últimos 100 mensajes anteriores a la
-invocación; omite fijados, registros internos y mensajes de 14 días o más. Al confirmar
-revalida permisos y solo puede borrar los mensajes seleccionados originalmente.
-Este comando no usa IA ni tokens. No se realizan borrados como parte de las pruebas.
+## Arquitectura de voz global
 
-La detección y voz Davefx española se ejecutan localmente en Render. Los modelos
-se descargan y verifican al construir Docker. Groq transcribe las preguntas y
-genera respuestas; Cloudflare es un respaldo opcional para el texto. No se guardan
-grabaciones. Las preguntas ya transcritas y respuestas reproducidas se envían al
-canal de texto `logs-tars` del mismo servidor, con autor, canal y hora. TARS necesita
-Ver canal y Enviar mensajes allí. No se registra conversación de fondo ni se hacen
-llamadas adicionales a IA para los registros. Si falla la transcripción no habrá
-texto que registrar; si falla la respuesta, se conserva solo la pregunta. Avisa a
-los participantes de este registro; sus textos quedan visibles para quienes tengan
-acceso a `logs-tars`. El detector puede equivocarse con ruido
-o acentos; `/escuchar` permite invocarlo manualmente.
+```mermaid
+flowchart LR
+  D[Discord speaking/start y voiceStateUpdate] --> M[Audio Mixer Manager]
+  M --> U[Map por userId: Opus a PCM16 mono 16 kHz]
+  U --> V[Silero VAD local y mínimo 0.5 s]
+  V --> S[Whisper por lotes en Groq Free]
+  S --> P[Parciales: preparar contexto local]
+  S --> F[Texto final con identidad del hablante]
+  F --> A[Clasificador local de intenciones]
+  A --> C[Controles, caché y herramientas directas]
+  A --> L[LLM: resumen y últimos 6 mensajes]
+  L --> T[Respuesta completa: fragmentos con perfil fijo y caché WAV]
+  C --> T
+  T --> O[Cola de reproducción del canal]
+```
 
-## Consumo y diagnóstico
+Discord requiere `receiver.subscribe(userId)`; no tiene una suscripción sin usuario.
+`src/voice/audioMixerManager.js` coordina suscripciones al conectar, al entrar alguien
+ y en `receiver.speaking.on('start')`. Deduplica suscripciones e ignora bots.
+Conserva PCM independiente en `Map<userId, Buffer[]>`; no suma señales. La diarización
+usa la identidad conocida por Discord: `[Usuario: Nombre] dijo: "texto"`, asociada
+internamente al ID. No identifica personas distintas compartiendo una cuenta.
 
-Con voz habilitada, el registro privado de Discord conserva los límites internos:
-500 intentos de API, 100.000 tokens estimados y 3.600 segundos de audio por 24 horas
-móviles. Se permiten 6 transcripciones y 6 respuestas por minuto, separadamente.
-Cada intento se guarda antes de llamar al proveedor; los fallos también cuentan.
-Cuando el proveedor informa `usage.total_tokens`, la reserva de tokens se ajusta
-al consumo real. Sin ese dato se conserva la estimación. Los registros antiguos
-no se rebajan porque no hay evidencia de su consumo real. `[IA:limite]` muestra
-el tope alcanzado, uso, reserva solicitada y fecha UTC de recuperación.
-Después de cada consulta de IA, `[IA:saldo]` muestra `tokens_restantes`,
-`tokens_contabilizados` y `limite_tokens` del límite interno de 24 horas móviles.
-Incluye errores y bloqueos. Usa el consumo real si está disponible y reservas
-conservadoras en los demás casos. No es el saldo de la cuenta Groq; `null` indica
-que el registro no está disponible o todavía no se ha cargado.
-El audio reserva al menos 10 segundos por llamada. No borres el registro de cuota.
-Estos topes son preventivos; los límites reales de cada proveedor siguen aplicando.
-Mantén las cuentas en el plan gratuito: el bot no modifica la facturación.
+Silero mediante `sherpa-onnx-node` filtra antes de STT; no es solo un umbral de
+energía. Descarta silencio, ruido rechazado por VAD e intervenciones con menos de
+0.5 segundos detectados. Conserva hasta 200 ms de inicio para no cortar consonantes;
+el cierre local espera 240 ms desde la última trama detectada como voz. El modelo
+además tiene su propio margen de detección. PCM solo vive en RAM.
 
-El filtro por energía descarta capturas sin señal suficiente antes de transcribir;
-las capturas aceptadas se envían completas, sin recortar la voz. No es un detector
-infalible de voz. Una continuación vacía no cierra la ventana
-restante ni genera avisos. Durante una pausa de cuota no se capturan más preguntas.
-Logs: `[voz:tiempos]` para latencia, `[voz:detector]` para recepción/detección y
-`[voz:pausa]` para el motivo y tiempo restante de un límite interno.
+Límites: 100 suscripciones, 12 segundos por intervención, 8 conexiones STT simultáneas,
+8 trabajos pendientes y 16 fragmentos TTS en cola. Bajo sobrecarga se descartan
+intervenciones; preguntas con más de 15 segundos en espera caducan. Una transmisión
+continua se divide en segmentos. La salida se serializa para evitar respuestas
+superpuestas. Salir libera decodificadores, VAD, temporizadores y sockets.
 
-## Desarrollo
+Por defecto se descarta recepción durante la reproducción de TARS y los 200 ms
+siguientes para evitar eco acústico; las suscripciones permanecen abiertas.
+`TARS_ALLOW_BARGE_IN=true` permite recibir mientras habla: **no implementa cancelación
+de eco ni interrumpe automáticamente la respuesta**. Pruébalo con auriculares.
+Siempre se ignoran los paquetes del propio bot.
 
-Node 24. `npm ci`, `npm test`. Docker instala ffmpeg y eSpeak NG, además de los
-modelos de voz. `TARS_WAKE_ENABLED=false` vuelve a la activación manual;
-`TARS_TTS_ENGINE=espeak` usa la voz ligera. Render y los proveedores gratuitos
-pueden suspender o limitar el servicio; no se garantiza disponibilidad permanente.
+## Las tres capas
 
-La carga neural tiene hasta 45 segundos en segundo plano. Durante la carga se usa
-la voz ligera, pasando a la voz neural cuando está lista. La síntesis neural sigue
-limitada a 15 segundos por respuesta. Un paquete Opus inválido aislado se descarta
-sin perder el resto de la recepción; cinco inválidos consecutivos reportan error.
-`[voz:captura]` y `[voz:audio]` distinguen capturas vacías, errores y falta de señal;
-`[voz:error]` indica la etapa que falló, sin registrar conversaciones.
-`[voz:entrada]` mide preparación, conexión, carga del detector y tiempo total de entrada.
-Las comprobaciones de programas se ejecutan en paralelo y se reutilizan durante el
-despliegue; se solapan con la conexión. El saludo solo se envía cuando TARS está listo.
+**A — local, sin tokens de LLM:** `src/optimization/lowLatencyPipeline.ts` reconoce
+intenciones con regex ancladas. “TARS mute”, “desmuteate”, “deafen”, “deja de escuchar”,
+“repite”, “sube/baja el volumen”, “estado”, “ayuda”, “resume lo que dijeron” y “humor 42”
+se resuelven directamente. Mute, deafen y volumen afectan a TARS. La moderación por
+voz remite a los comandos escritos existentes con menciones explícitas y permisos.
 
-Referencia de límites: https://console.groq.com/docs/rate-limits
+Con `TARS_WAKE_REQUIRED=true`, responde a TARS, preguntas directas, invocaciones
+manuales o continuaciones del interlocutor durante 8 segundos. La detección de
+preguntas es heurística: puede confundir preguntas entre participantes. Con `false`
+responde a toda intervención aceptada. Este filtro funciona **después del STT**:
+no evita enviar voz de fondo al proveedor. El detector acústico local de Hey TARS
+sigue disponible en el modo anterior.
+
+La caché acotada guarda saludos, agradecimientos e identidad durante 5 minutos,
+aislados por canal/humor. No reutiliza respuestas personales ni preguntas contextuales.
+“Cero tokens” se refiere al LLM; el STT puede tener coste.
+
+**B — módulo incremental histórico, deshabilitado en el flujo gratuito:** `src/voice/deepgramStreaming.js` envía PCM por WebSocket
+mientras se habla, después del umbral local de 0.5 segundos. Los parciales preparan
+clasificación y contexto sin ejecutar acciones. Solo los resultados finales
+confirmados provocan respuestas. Hay timeout, cancelación, límites de buffering y
+reserva de presupuesto antes de abrir el socket. No duplica STT automáticamente
+si falla el proveedor.
+
+`TARS_STT_PROVIDER=groq` conserva Whisper por lotes para instalaciones existentes.
+Ese modo espera el segmento completo y **no es streaming**. El módulo incremental
+se conserva para no borrar trabajo previo, pero `createVoiceAudio` no lo conecta:
+configurar Deepgram produce un error explícito antes de entrar al canal.
+
+**C — modelo solo cuando hace falta:** obtiene la respuesta completa antes de
+fragmentarla para Piper, con identidad y parámetros fijos. Cada WAV se valida antes
+de reproducirse; si la síntesis falla, entrega la respuesta por texto. Texto y voz
+tienen colas independientes. Se eliminó la separación
+artificial de 10 segundos para voz; se mantienen presupuesto, cooldown y Retry-After.
+Una respuesta que ya emitió frases no se reintenta en otro proveedor si falla.
+
+`contextManager.js` separa memoria por `guildId:channelId`, conserva los últimos
+6 mensajes (usuario o TARS) y crea un resumen extractivo local cada 20 mensajes,
+sin llamadas adicionales al LLM. Recorta entradas, resumen y contexto enviado.
+El resumen extractivo puede perder matices; no es síntesis semántica. El historial
+de voz global no contamina el historial personal usado por `/tars`.
+
+## Personalidad y patrones de Meta AI
+
+`src/persona/sparkInspiredSystemPrompt.md` contiene Identity, Personality, Rules y
+Tools. Humor inicial 75%, configurable con `TARS_HUMOR` y “TARS humor 42” durante
+la sesión. Responde en 1–3 frases; amplía cuando se pide. El prompt se incluye una
+vez por petición y no se guarda repetido en el historial. Cada cuarta respuesta del
+modelo ofrece dos botones en el chat, sin leerlos. Caducan en 60 segundos; solo
+puede usarlos el solicitante presente en el canal.
+
+Meta describe Muse Spark como multimodal, contextual e integrado con Meta AI e
+Instagram; no publica la arquitectura completa de sus DMs. Esto es una implementación
+propia inspirada en patrones públicos, no una copia de pesos, prompts privados o
+infraestructura. Fuentes:
+[Meta](https://about.fb.com/news/2026/04/introducing-muse-spark-meta-superintelligence-labs/),
+[Discord VoiceReceiver](https://discord.js.org/docs/packages/voice/main/VoiceReceiver:Class),
+[Deepgram streaming](https://developers.deepgram.com/reference/speech-to-text/listen-streaming),
+[Silero en sherpa-onnx](https://k2-fsa.github.io/sherpa/onnx/vad/silero-vad.html).
+
+`search_web` y `generate_image` están preparadas como handlers inyectables en
+`createVoice({ tools })`, resueltos por intención local sin razonamiento del modelo:
+
+```js
+tools: {
+  search_web: async ({ query, signal, userId, channelKey }) => {
+    // Conectar proveedor autorizado; devolver texto/URL del resultado.
+  },
+  generate_image: async ({ prompt, signal, userId, channelKey }) => {
+    // Conectar proveedor autorizado; devolver texto/URL del resultado.
+  },
+}
+```
+
+Sin handlers, TARS dice que la herramienta no está configurada. No incluye proveedores
+de búsqueda/imágenes ni simula ejecución. Los handlers deben propagar `signal`,
+aplicar su presupuesto y devolver texto, limitado a 600 caracteres. Las URLs no se
+leen en TTS.
+
+## Privacidad y memoria
+
+Al entrar TARS dice **“Escuchando a todo el canal”** y publica aviso de STT externo y
+`/privacidad`. También avisa en el chat cuando entra un participante. `/privacidad
+accion` y `!privacidad accion` admiten:
+
+| Acción | Efecto |
+| --- | --- |
+| `estado` | Indica proveedor, escucha, exclusión, almacenamiento y logs |
+| `excluir` | Cancela captura/trabajos de tu voz y persiste exclusión del canal |
+| `incluir` | Retira tu exclusión y vuelve a suscribirse |
+| `borrar` | Borra tus recuerdos y purga contexto compartido derivado |
+
+Exclusión/inclusión requieren estar en el canal activo. Borrar no impide crear nuevos
+recuerdos: usa también excluir. `/reset` conserva su efecto sobre tu historial de
+texto y además borra memoria local de voz. El borrado funciona también sin sesión
+de voz. No elimina mensajes ya publicados en Discord ni datos enviados a proveedores.
+
+`TARS_DATA_DIR/channelMemory.json` (por defecto `data/channelMemory.json`) guarda
+usuarios frecuentes, gustos expresados como “me gusta…”, temas con “recuerda el
+tema…” y bromas con “recuerda esta broma…”, además de exclusiones. No infiere gustos
+ocultos. Escrituras serializadas y reemplazo atómico. Resumen y seis mensajes
+recientes quedan en RAM; no se guardan transcripciones crudas en el JSON.
+Hasta 100 canales, 50 usuarios frecuentes por canal, 5 gustos por usuario, 10 temas
+y 10 bromas. El contexto enviado al LLM contiene estos datos como información no
+confiable, nunca como instrucciones del sistema.
+
+En modo global los logs de conversación en Discord están desactivados por defecto.
+Con `TARS_VOICE_LOG_ENABLED=true`, las transcripciones aceptadas —incluida conversación
+de fondo— y respuestas van a `logs-tars`, con autor/canal/hora y menciones deshabilitadas.
+`/privacidad` muestra si están activos. Comandos y logs de texto conservan su
+funcionamiento anterior. Configura acceso y retención de esos registros.
+
+## Configuración y compatibilidad
+
+```sh
+npm ci
+node scripts/download-models.js --vad-only
+npm test
+```
+
+`npm run models:download` descarga también los modelos anteriores; Docker lo hace
+al construir. Descargas verificadas con SHA-256 fijado, incluido Silero. Si falta
+VAD o es inválido, la entrada global falla; no usa silenciosamente un filtro de
+energía. Configuración gratuita en el despliegue:
+
+```dotenv
+TARS_VOICE_ENABLED=true
+TARS_GLOBAL_LISTENING=true
+TARS_STT_PROVIDER=groq
+TARS_WAKE_REQUIRED=true
+TARS_HUMOR=75
+TARS_ALLOW_BARGE_IN=false
+TARS_VOICE_LOG_ENABLED=false
+```
+
+Configura también `DISCORD_TOKEN`, proveedor LLM (Groq o Cloudflare) y
+`TARS_STATE_CHANNEL_ID` o `LOG_CHANNEL_ID` para cuotas. Mantén `.env` fuera de Git.
+`TARS_DATA_DIR` debe ser un volumen persistente escribible para conservar recuerdos
+y exclusiones entre despliegues. Docker crea `/app/data` para el usuario `node`,
+pero un hosting con disco efímero puede borrarlo.
+
+Se conservan `/entrar`, `/escuchar`, `/salir`, `/tars`, `/reset`, `/ping`, `/ayuda`,
+`/resumir`, `/usuarios`, `/borrar` y variantes con `!`. `/escuchar` activa la próxima
+pregunta sin wake word y reanuda escucha/voz. Sale tras 5 minutos sin invocaciones
+aceptadas; la conversación de fondo no renueva el plazo.
+
+`TARS_GLOBAL_LISTENING=false` conserva módulo y pruebas anteriores: captura manual
+y detector acústico opcional `TARS_WAKE_ENABLED=true`, sin VAD global ni exclusiones
+por usuario. En ese modo `/privacidad` explica el comportamiento y remite a `/salir`.
+`TARS_WAKE_ENABLED` solo afecta al modo anterior.
+
+La moderación no cambia: `!borrar 10`, `!borrar @usuario 10` y `/borrar` aceptan 1–100;
+más de 50 requiere confirmación del mismo solicitante. Exige Líder/Sigma y Gestionar
+mensajes. Omite fijados, registros internos y mensajes de 14 días o más. Mute de
+texto, apodos y expulsión de voz mantienen controles de permisos/jerarquía.
+No se hicieron acciones de moderación reales durante las pruebas.
+
+## Presupuesto y latencia
+
+Límites internos por 24 horas móviles: 500 intentos, 100.000 tokens estimados,
+3.600 segundos de audio, y 6 solicitudes/minuto para STT y otras 6 para LLM.
+Los fallos también consumen reserva. Streaming STT reserva 12 segundos antes de
+conectar; Whisper reserva al menos 10. El consumo informado por LLM ajusta reservas.
+Si el stream termina antes de `usage`, se mantiene la estimación conservadora.
+`[IA:saldo]` no representa el saldo facturable de una cuenta.
+
+`[voz:latencia]` informa `fin_a_reproduccion_ms`: desde la última trama detectada como
+voz hasta `AudioPlayerStatus.Playing` de la primera frase. Incluye cierre VAD, STT,
+cola, primer texto, síntesis y arranque del reproductor. Es una aproximación en el
+servidor: no mide cuándo escucha el cliente Discord. Solo respuestas que comienzan
+a reproducirse generan muestra; revisa también errores y sobrecarga. `cumple` exige
+<800 ms. Para resumir registros exportados:
+
+```sh
+node scripts/voice-latency.js ruta/al/registro.log
+```
+
+El objetivo **<800 ms no está demostrado en producción**. Las pruebas usan dobles
+de Discord, STT y LLM para verificar orden/concurrencia, no rendimiento del servicio.
+Prueba una y varias personas, modelos fríos/calientes, ambas rutas STT y eco;
+compara p50/p95 y errores. Streaming y modelos calientes reducen trabajo tras el
+fin del habla, pero red, CPU, cuotas y cola pueden superar el objetivo. No se
+garantiza ese tiempo con Whisper por lotes ni hosting gratuito suspendido.
+
+Diagnóstico: `[voz:error]`, `[voz:latencia]`, `[voz:memoria]`, `[IA:limite]` y
+`[IA:saldo]`. Los nuevos diagnósticos técnicos no contienen transcripciones ni claves.
+Pruebas: hablantes simultáneos, bots, VAD/0.5 s, privacidad, cancelación, controles
+sin LLM, contexto aislado, persistencia, SSE fragmentado, texto parcial/final,
+presupuesto y compatibilidad anterior. Los tests SSE cubren el módulo histórico;
+la ruta gratuita actual espera el texto completo antes de reproducirlo.

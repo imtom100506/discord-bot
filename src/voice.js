@@ -1,17 +1,22 @@
 const { Readable } = require('node:stream');
 const { startWakeListener } = require('./wakeListener');
+const { speechParts } = require('./voiceProfile');
 const IDLE_MS = 5 * 60 * 1000;
 const FOLLOWUP_MS = 8000;
 const MAX_AUDIO_BYTES = 12 * 32000;
 
-function createVoice({ client, askAI, audio, recordConversation = () => {}, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
+function createLegacyVoice({ client, askAI, audio, recordConversation = () => {}, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   let session, joining = false;
   const load = () => {
     api ||= require('@discordjs/voice');
     decoderFactory ||= require('./opusDecoder').createOpusDecoder;
   };
-  const tell = (s, text) => s.channel.send({ content: text, allowedMentions: { parse: [] } }).catch(() => {});
+  const tell = async (s, text) => {
+    for (const content of require('./commandUtils').splitResponse(text)) {
+      await s.channel.send({ content, allowedMentions: { parse: [] } }).catch(() => {});
+    }
+  };
   function leave(s = session) {
     if (!s || s.closed) return;
     s.closed = true;
@@ -88,7 +93,6 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
           timings.detector_ms = now() - detectorStarted;
         }
         connection.subscribe(s.player); schedule(s);
-        void audio.warm?.();
         if (s.wake) return await ctx.reply('En línea. Di "Hey TARS" y tu consulta. Sesión activa mientras conversemos; se cerrará tras 5 minutos de inactividad.');
         return await ctx.reply('En línea. Usa /escuchar y habla. Me retiraré tras 5 minutos de inactividad.');
       } catch (error) { leave(s); throw error; }
@@ -134,13 +138,18 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
       const reply = await askAI(userId, question, { voice: true, signal: s.abort.signal });
       mark('respuesta_ms');
       if (s.closed) return;
-      const wav = await audio.synthesize(reply, s.abort.signal);
-      mark('sintesis_ms');
-      if (s.closed) return;
-      s.resource = api.createAudioResource(Readable.from([wav]), { inputType: api.StreamType.Arbitrary });
-      s.player.play(s.resource);
-      await api.entersState(s.player, api.AudioPlayerStatus.Playing, 10000);
-      await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
+      for (const part of speechParts(reply)) {
+        let wav;
+        try { wav = await audio.synthesize(part, s.abort.signal); }
+        catch (error) { s.abort.signal.throwIfAborted(); if (!s.closed) await tell(s, reply); break; }
+        mark('sintesis_ms');
+        if (s.closed) return;
+        s.resource = api.createAudioResource(Readable.from([wav]), { inputType: api.StreamType.Arbitrary });
+        s.player.play(s.resource);
+        await api.entersState(s.player, api.AudioPlayerStatus.Playing, 10000);
+        await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
+        s.resource.playStream.destroy(); s.resource = undefined;
+      }
       if (!s.closed) recordConversation({ guildId: s.voiceChannel.guild.id, channelId: s.voiceChannel.id, userId, role: 'assistant', text: reply });
       answered = true;
     } catch (error) {
@@ -196,5 +205,9 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
     if (![...s.voiceChannel.members.values()].some(m => !m.user.bot)) leave(s);
   }
   return { handle, leave, onVoiceState };
+}
+function createVoice(options = {}) {
+  if (options.globalListening === false || (options.env || process.env).TARS_GLOBAL_LISTENING === 'false') return createLegacyVoice(options);
+  return require('./voice/channelVoice').createChannelVoice(options);
 }
 module.exports = { createVoice, IDLE_MS, FOLLOWUP_MS, MAX_AUDIO_BYTES };

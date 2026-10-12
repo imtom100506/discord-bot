@@ -4,6 +4,13 @@ Los binarios se excluyen de Git. `hey-tars.txt` define pronunciaciones mediante
 fonemas ingleses: HH EY1 T AA1 R Z y variantes con S/sin H inicial.
 
 Detección: sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20, Apache-2.0.
-Voz: vits-piper-es_ES-davefx-medium-int8. Dataset CC0 según MODEL_CARD incluido.
+Voz: vits-piper-es_MX-claude-high-int8. Dataset Apache-2.0 según MODEL_CARD incluido.
+Perfil y SHA-256 fijados en src/voiceProfile.js. Es una aproximación mexicana;
+no es una clonación ni un modelo del actor de TARS. Los avisos vienen en el archivo descargado.
 Motor: sherpa-onnx-node 1.13.8, Apache-2.0. Conserva los avisos de los archivos.
 No requiere Picovoice ni modelos entrenados por el usuario.
+
+VAD global: Silero VAD (MIT), exportación de k2-fsa para 16 kHz; se valida SHA-256
+antes de guardarlo en `models/silero_vad.onnx`. `node scripts/download-models.js
+--vad-only` descarga únicamente ese modelo. No sustituye un VAD ausente por un
+umbral de energía: la entrada global falla con un mensaje de configuración.

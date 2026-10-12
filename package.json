@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test",
-    "models:download": "node scripts/download-models.js"
+    "models:download": "node scripts/download-models.js",
+    "voice:pregenerate": "node scripts/pregenerate-voice.js"
   },
   "license": "ISC",
   "type": "commonjs",
@@ -19,6 +20,7 @@
     "dotenv": "^16.4.5",
     "opusscript": "^0.0.8",
     "prism-media": "^1.3.5",
-    "sherpa-onnx-node": "1.13.8"
+    "sherpa-onnx-node": "1.13.8",
+    "ws": "^8.22.0"
   }
 }

@@ -50,6 +50,10 @@ async function sendLog(type, data) {
 }
 
 const commands = [
+  new SlashCommandBuilder().setName('privacidad').setDescription('Consulta el uso de tu voz, exclúyete o borra tu memoria local')
+    .addStringOption(o => o.setName('accion').setDescription('Acción de privacidad').addChoices(
+      { name: 'Estado', value: 'estado' }, { name: 'Excluir mi voz', value: 'excluir' },
+      { name: 'Incluir mi voz', value: 'incluir' }, { name: 'Borrar mi memoria', value: 'borrar' })),
   ...['entrar', 'escuchar', 'salir'].map(name => new SlashCommandBuilder().setName(name)
     .setDescription({ entrar: 'Invita a TARS a tu canal de voz', escuchar: 'Activa una pregunta de voz de hasta 12 segundos', salir: 'Desconecta a TARS de tu canal de voz' }[name])),
   new SlashCommandBuilder().setName("tars").setDescription("Habla con TARS")
@@ -147,11 +151,16 @@ async function disconnect(ctx, text) {
 }
 
 async function execute(ctx, command, argument) {
+  if (command === 'privacidad') {
+    if (process.env.TARS_GLOBAL_LISTENING === 'false') return ctx.reply('Modo anterior: captura manual o Hey TARS, STT Groq y logs-tars. Usa /salir para detener la recepción; /reset borra tu historial de IA.');
+    return voice.handle(ctx, command, argument);
+  }
   if (['entrar', 'escuchar', 'salir'].includes(command)) return voice.handle(ctx, command);
   if (command === "ping") return ctx.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
   if (command === "ayuda") return ctx.reply(HELP);
   if (command === "reset") {
     clearHistory(ctx.user.id);
+    await voice.forget?.(ctx.user.id);
     void sendLog("reset", { usuario: ctx.user.username });
     return ctx.reply("Historial borrado. Empezamos de cero.");
   }
@@ -210,6 +219,10 @@ async function handleError(ctx, error) {
 }
 
 client.on("interactionCreate", async interaction => {
+  if (interaction.isButton?.() && interaction.customId?.startsWith('tars_followup:')) {
+    try { await voice.handleSuggestion?.(interaction); } catch (error) { console.warn('[voz:sugerencia]', error.code || 'error'); }
+    return;
+  }
   if (!interaction.isChatInputCommand() || !interaction.isRepliable()) return;
   if (!commands.some(command => command.name === interaction.commandName)) return;
   const ctx = {
@@ -224,12 +237,13 @@ client.on("interactionCreate", async interaction => {
     },
   };
   try {
-    await interaction.deferReply(["reset", "ayuda"].includes(interaction.commandName) ? { flags: 64 } : {});
+    await interaction.deferReply(["reset", "ayuda", "privacidad"].includes(interaction.commandName) ? { flags: 64 } : {});
     void sendLog("slash", { usuario: ctx.user.username, comando: interaction.commandName, canal: ctx.channel?.name || "privado" });
     const argument = interaction.commandName === 'borrar' ? `${interaction.options.getUser('usuario') ? `<@${interaction.options.getUser('usuario').id}> ` : ''}${interaction.options.getInteger('cantidad')}` :
       interaction.commandName === "resumir" ? interaction.options.getInteger("cantidad") :
       interaction.commandName === "usuarios" ? interaction.options.getString("rol") :
-      interaction.commandName === "tars" ? interaction.options.getString("mensaje") : null;
+      interaction.commandName === "tars" ? interaction.options.getString("mensaje") :
+      interaction.commandName === 'privacidad' ? interaction.options.getString('accion') : null;
     await execute(ctx, interaction.commandName, argument);
   } catch (error) { await handleError(ctx, error); }
 });
@@ -238,7 +252,7 @@ client.on("messageCreate", async message => {
   if (message.author.bot) return;
   const recent = channelContext.get(message.channel.id) || [];
   channelContext.set(message.channel.id, appendContext(recent, `${message.author.username}: ${message.content}`));
-  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir|borrar)(?:\s+([\s\S]*))?$/i);
+  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir|borrar|privacidad)(?:\s+([\s\S]*))?$/i);
   const ctx = {
     user: message.author, guild: message.guild, channel: message.channel, messageId: message.id,
     reply: async text => {

@@ -36,33 +36,32 @@ function hasSpeech(pcm) {
 }
 
 function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch, now = Date.now, runImpl = run,
-  neural = require('./neuralSpeech').createNeuralSpeech() } = {}) {
+  neural = require('./neuralSpeech').createNeuralSpeech(), cache } = {}) {
   const execute = runImpl;
+  const { profileId, speechParts } = require('./voiceProfile');
+  cache ||= require('./speechCache').createSpeechCache({ identity: profileId });
   let blockedUntil = 0;
-  let neuralFailed = false;
-  let warming = false;
+  let ready;
+  let queue = Promise.resolve(), pending = 0, failedUntil = 0;
   let generation = 0;
-  async function warm() {
-    if (env.TARS_TTS_ENGINE === 'espeak' || neuralFailed || warming) return;
-    warming = true;
-    const started = generation;
-    try { await neural.warm(); }
-    catch (error) { if (started === generation) { neuralFailed = true; console.warn('[voz:tts]', JSON.stringify({ phase: 'load', message: error.message, code: error.code })); } }
-    finally { if (started === generation) warming = false; }
+  function warm() {
+    ready ||= Promise.resolve().then(() => neural.warm?.());
+    return ready;
   }
-  function close() { generation++; neural.close(); neuralFailed = false; warming = false; }
+  function close() { generation++; neural.close?.(); ready = undefined; failedUntil = 0; }
   let checked;
   function check() {
     // Binarios/modelos no cambian durante un despliegue: verificar una sola vez.
     checked ||= (async () => {
-      if (!env.GROQ_API_KEY) throw new Error('Falta GROQ_API_KEY.');
+      if (env.TARS_STT_PROVIDER && env.TARS_STT_PROVIDER !== 'groq') throw new Error('El modo gratuito requiere TARS_STT_PROVIDER=groq. Deepgram usa créditos de pago.');
+      if (env.TARS_TTS_ENGINE && env.TARS_TTS_ENGINE !== 'piper') throw new Error('La voz fija requiere TARS_TTS_ENGINE=piper. No se sustituirá por eSpeak.');
+      if (!env.GROQ_API_KEY) throw new Error('Faltan credenciales de STT.');
       const checks = await Promise.allSettled([
-        execute(env.TARS_ESPEAK_PATH || 'espeak-ng', ['--version'], { timeout: 5000, windowsHide: true }),
         execute('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true }),
       ]);
       const failed = checks.find(result => result.status === 'rejected');
       if (failed) throw failed.reason;
-      if (env.TARS_TTS_ENGINE !== 'espeak') require('./localSpeech').ttsConfig();
+      require('./localSpeech').ttsConfig();
     })().catch(error => { checked = undefined; throw error; });
     return checked;
   }
@@ -77,7 +76,7 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     signal.throwIfAborted();
     const body = new FormData();
     body.set('file', new Blob([wav(pcm)], { type: 'audio/wav' }), 'pregunta.wav');
-    body.set('model', 'whisper-large-v3-turbo'); body.set('language', 'es');
+    body.set('model', 'whisper-large-v3-turbo'); // Detectar idioma; no forzar traducción a español.
     body.set('response_format', 'json'); body.set('temperature', '0');
     const response = await fetchImpl('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST', headers: { Authorization: `Bearer ${env.GROQ_API_KEY}` }, body,
@@ -94,22 +93,34 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     if (typeof data.text !== 'string' || !data.text.trim()) console.info('[voz:audio]', JSON.stringify({ reason: 'empty_transcription', receivedBytes }));
     return typeof data.text === 'string' ? data.text.trim().slice(0, 800) : '';
   }
-  async function synthesize(text, signal) {
-    const spoken = text.replace(/https?:\/\/\S+/g, '').replace(/[*_`#<>]/g, '').slice(0, 280);
-    if (env.TARS_TTS_ENGINE !== 'espeak' && !neuralFailed && !warming) {
-      try {
-        return await neural.synthesize(spoken, signal);
-      } catch (error) {
-        signal.throwIfAborted();
-        neuralFailed = true;
-        neural.close();
-        console.warn('Síntesis neural no disponible; usando voz local ligera.');
+  function synthesize(text, signal) {
+    const parts = speechParts(text), epoch = generation;
+    if (parts.length !== 1) return Promise.reject(Error('Sintetiza un fragmento de hasta 240 caracteres; no se recorta texto.'));
+    if (pending >= 8) return Promise.reject(Error('Cola de síntesis llena'));
+    pending++;
+    const job = queue.then(async () => {
+      const guard = () => { signal.throwIfAborted(); if (generation !== epoch) throw Error('Sesión de voz cerrada'); };
+      guard();
+      const spoken = parts[0], cached = await cache.get(spoken);
+      guard(); if (cached) return cached;
+      if (now() < failedUntil) throw Error('Voz temporalmente no disponible');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const abort = () => neural.close?.();
+          signal.addEventListener('abort', abort, { once: true });
+          try { await warm(); } finally { signal.removeEventListener('abort', abort); }
+          guard();
+          const bytes = await neural.synthesize(spoken, signal);
+          guard(); cache.put(spoken, bytes); return bytes;
+        } catch (error) {
+          guard(); neural.close?.(); ready = undefined;
+          if (attempt === 1) { failedUntil = now() + 60000; throw error; }
+        }
       }
-    }
-    const { stdout } = await execute(env.TARS_ESPEAK_PATH || 'espeak-ng', ['-v', 'es-419+m3', '-p', '30', '-s', '155', '--stdout', '--', spoken], {
-      encoding: 'buffer', maxBuffer: 4 * 1024 * 1024, timeout: 10000, windowsHide: true, signal,
     });
-    return stdout;
+    const result = job.finally(() => { pending--; });
+    queue = result.catch(() => {});
+    return result;
   }
   return { check, transcribe, synthesize, warm, close };
 }

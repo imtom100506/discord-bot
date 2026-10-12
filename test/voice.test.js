@@ -52,18 +52,19 @@ test('short quiet speech survives surrounding silence; brief clicks do not', () 
   assert.equal(trimSpeech(Buffer.alloc(3)).length, 0);
 });
 
-test('neural TTS has bounded runtime and falls back locally without a network request', async () => {
+test('neural TTS retries once then fails without switching engine or network', async () => {
   const calls = [];
   const audio = createVoiceAudio({ env: { TARS_TTS_ENGINE: 'piper' },
-    neural: { synthesize: async () => { throw Error('timeout'); }, close() {} },
+    neural: { synthesize: async () => { calls.push('neural'); throw Error('timeout'); }, close() {} },
     fetchImpl: async () => { throw Error('unexpected network'); },
     runImpl: async (file, args, options) => {
       calls.push({ file, args, options });
       return { stdout: Buffer.from('wav') };
     } });
-  assert.equal((await audio.synthesize('Misión lista.', new AbortController().signal)).toString(), 'wav');
-  assert.equal(calls[0].options.timeout, 10000);
-  assert.ok(calls[0].args.includes('es-419+m3'));
+  await assert.rejects(audio.synthesize('Misión lista.', new AbortController().signal), /timeout/);
+  assert.deepEqual(calls, ['neural', 'neural']);
+  await assert.rejects(audio.synthesize('Otra.', new AbortController().signal), /temporalmente/);
+  assert.equal(calls.length, 2);
 });
 
 test('leaving during neural speech generation prevents fallback', async () => {
@@ -99,7 +100,7 @@ function fixture(overrides = {}) {
   const guild = { id: 'guild', members: { fetch: async () => ({ voice: { channel } }), me: {} } };
   const channel = { id: 'voice', type: 2, guild, permissionsFor: () => ({ has: () => true }), members: new Map([['human', { user: { bot: false } }]]) };
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
-  const voice = createVoice({ enabled: true, client: { user: { id: 'bot' } }, api,
+  const voice = createVoice({ globalListening: false, enabled: true, client: { user: { id: 'bot' } }, api,
     wakeFactory: overrides.wakeFactory,
     recordConversation: overrides.recordConversation,
     askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
@@ -297,30 +298,33 @@ test('manual capture takes a live detector stream instead of subscribing to its 
   assert.deepEqual(received, [Buffer.from([7, 8, 9, 10])]); f.voice.leave();
 });
 
-test('light voice is available while neural model loads, then neural voice resumes', async () => {
+test('first sound waits for neural warmup; repeats use identical cached WAV', async () => {
   let ready, neuralCalls = 0;
   const audio = createVoiceAudio({ env: {}, neural: {
     warm: () => new Promise(resolve => { ready = resolve; }),
-    synthesize: async () => { neuralCalls++; return Buffer.from('neural'); }, close() {},
-  }, runImpl: async () => ({ stdout: Buffer.from('light') }) });
+    synthesize: async () => { neuralCalls++; return wav(Buffer.alloc(200)); }, close() {},
+  }, runImpl: async () => { throw Error('No other engine allowed'); } });
   const loading = audio.warm();
-  assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'light');
+  const first = audio.synthesize('Hola nueva prueba', new AbortController().signal);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(neuralCalls, 0);
   ready(); await loading;
-  assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'neural');
+  assert.deepEqual(await first, wav(Buffer.alloc(200)));
+  assert.deepEqual(await audio.synthesize('Hola nueva prueba', new AbortController().signal), await first);
   assert.equal(neuralCalls, 1); audio.close();
 });
 
 test('audio dependency checks run concurrently, share a result and retry after failure', async () => {
   const releases = []; let calls = 0;
-  const audio = createVoiceAudio({ env: { GROQ_API_KEY: 'test', TARS_TTS_ENGINE: 'espeak' },
+  const audio = createVoiceAudio({ env: { GROQ_API_KEY: 'test', TARS_TTS_ENGINE: 'piper' },
     runImpl: () => { calls++; return new Promise((resolve, reject) => releases.push({ resolve, reject })); } });
   const first = audio.check(); const shared = audio.check();
-  assert.equal(first, shared); assert.equal(calls, 2);
-  releases[0].reject(Error('temporary')); releases[1].resolve();
+  assert.equal(first, shared); assert.equal(calls, 1);
+  releases[0].reject(Error('temporary'));
   await assert.rejects(first);
-  const retry = audio.check(); assert.equal(calls, 4);
-  releases[2].resolve(); releases[3].resolve(); await retry;
-  await audio.check(); assert.equal(calls, 4);
+  const retry = audio.check(); assert.equal(calls, 2);
+  releases[1].resolve(); await retry;
+  await audio.check(); assert.equal(calls, 2);
 });
 
 test('join overlaps preparation and connection and announces readiness only after both', async () => {
