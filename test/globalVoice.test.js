@@ -22,7 +22,7 @@ async function fixture(options = {}) {
   const ctx = { guild, user: { id: 'alice' }, channel: { send: async payload => replies.push(payload) }, reply: async text => replies.push({ content: text }) };
   const memory = createContextManager({ persist: false });
   if (options.excluded) await memory.exclude('guild:voice', options.excluded, true);
-  const voice = createVoice({ enabled: true, env: {}, client: { user: { id: 'bot' } }, api, memory, sendLog: (event, data) => logs.push({ event, ...data }),
+  const voice = createVoice({ enabled: true, env: { TARS_VAD_ENDPOINT_MS: 240, ...options.env }, client: { user: { id: 'bot' } }, api, memory, sendLog: (event, data) => logs.push({ event, ...data }),
     decoderFactory: () => new PassThrough(), vadFactory: () => ({ frameBytes: 1024, process: b => b.readInt16LE(0) !== 0, reset() {}, close() {} }),
     audio: { countdown: options.countdown || (async () => Buffer.from('countdown')), check: async () => {}, synthesize: async text => { said.push(text); if (options.synthesize) return options.synthesize(text); return Buffer.from('wav'); }, close() {}, transcribe: async (b, signal) => {
       transcribed.push(b); if (options.transcribe) return options.transcribe(b, signal);
@@ -187,4 +187,40 @@ test('negation and casual mention never disconnect', async () => {
     f.input.get('alice').write(pcm()); await f.advance(240);
     assert.equal(f.destroyed, false); f.voice.leave();
   }
+});
+
+
+test('LLM cooldown preserves reception and priority exits, with one explanatory warning', async () => {
+  let text = 'TARS explica Marte';
+  const f = await fixture({ transcribe: async () => text, askAI: async () => {
+    throw Object.assign(Error('Límite local: responde en 20 segundos.'), { code: 'AI_BUDGET', scope: 'llm', reason: 'requests_minute', retryAfterMs: 20000 });
+  } });
+  f.input.get('alice').write(pcm()); await f.advance(240);
+  f.input.get('bob').write(pcm()); await f.advance(240);
+  assert.equal(f.requests.length, 1); assert.equal(f.transcribed.length, 2);
+  assert.equal(f.logs.filter(x => x.event === 'voz_error').length, 1);
+  assert.equal(f.logs.find(x => x.event === 'voz_error').servicio, 'llm');
+  text = 'TARS salte'; f.input.get('bob').write(pcm()); await f.advance(240);
+  assert.equal(f.destroyed, true);
+});
+
+test('slow synthesis delivers text without playing stale speech', async () => {
+  let release;
+  const f = await fixture({ synthesize: text => text === 'Escuchando a todo el canal' ? Buffer.from('wav') : new Promise(resolve => { release = resolve; }) });
+  f.input.get('alice').write(pcm()); await f.advance(240);
+  await f.advance(16000); release(Buffer.from('wav')); await f.advance(0);
+  assert.equal(f.plays.length, 1);
+  assert.ok(f.replies.some(x => x.content === 'Respuesta breve.'));
+  assert.ok(f.logs.some(x => x.event === 'voz_respuesta_texto'));
+  f.voice.leave();
+});
+
+test('production endpoint keeps brief pauses in the same STT request', async () => {
+  const f = await fixture({ env: { TARS_VAD_ENDPOINT_MS: 650 } });
+  f.input.get('alice').write(pcm()); await f.advance(300);
+  assert.equal(f.transcribed.length, 0);
+  f.input.get('alice').write(pcm()); await f.advance(649);
+  assert.equal(f.transcribed.length, 0);
+  await f.advance(1); assert.equal(f.transcribed.length, 1);
+  f.voice.leave();
 });

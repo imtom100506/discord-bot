@@ -71,7 +71,7 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
       console.info('[voz:audio]', JSON.stringify({ reason: receivedBytes ? 'below_energy_threshold' : 'empty_capture', receivedBytes }));
       return '';
     }
-    if (now() < blockedUntil) throw new Error('Transcripción en pausa por límite del proveedor.');
+    if (now() < blockedUntil) throw Object.assign(new Error('Transcripción en pausa por límite del proveedor.'), { code: 'AI_BUDGET', scope: 'stt', reason: 'provider_429', retryAfterMs: blockedUntil - now() });
     await budget.reserve({ audio: Math.max(10, Math.ceil(pcm.length / 32000)) });
     signal.throwIfAborted();
     const body = new FormData();
@@ -86,6 +86,7 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
       if (response.status === 429) {
         const { retryAfter } = require('./aiClient');
         blockedUntil = now() + retryAfter(response.headers.get('retry-after'), now());
+        throw Object.assign(new Error(`El proveedor de transcripción pide esperar ${Math.ceil((blockedUntil - now()) / 1000)} segundos.`), { code: 'AI_BUDGET', scope: 'stt', reason: 'provider_429', retryAfterMs: blockedUntil - now() });
       }
       throw new Error(`Transcripción no disponible (${response.status}).`);
     }

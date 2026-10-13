@@ -18,7 +18,7 @@ function createLegacyVoice({ client, askAI, audio, recordConversation = () => {}
       await s.channel.send({ content, allowedMentions: { parse: [] } }).catch(error => log(s, 'voz_chat_error', { error: error.message }));
     }
   };
-  const log = (s, event, data = {}) => sendLog(event, { servidor_id: s.voiceChannel.guild.id, canal_id: s.voiceChannel.id, ...data });
+  const log = (s, event, data = {}) => sendLog(event, { servidor_id: s.voiceChannel.guild.id, canal_id: s.voiceChannel.id, canal_nombre: s.voiceChannel.name, ...data });
   function control(s, text, userId, addressed = false) {
     if (s.closed || !s.voiceChannel.members.has(userId) || s.voiceChannel.members.get(userId).user.bot) return false;
     const intent = voiceControl(text) || (addressed ? voiceControl('TARS ' + text) : null);

@@ -30,18 +30,18 @@ Piper es monolingüe: puede pronunciar mal otros idiomas sin traducirlos.
 
 ## Aproximación elegida y recursos
 
-Referencia solicitada: doblaje latinoamericano. Piper `es_MX-claude-high-int8`
+Referencia solicitada: doblaje latinoamericano. Piper `es_MX-ald-medium`
 es un candidato gratuito con pronunciación mexicana, un solo speaker, CPU y sin
 servicio TTS externo. **No es la voz del actor ni se ha comprobado semejanza auditiva
 con TARS**. No se promete una réplica casi idéntica con Render Free. El perfil
-mantiene el ajuste grave existente (tasa ×0,90 y velocidad ×1,06); bajar la tasa
+mantiene el ajuste grave existente (tasa ×0,84 y velocidad ×1,12); bajar la tasa
 también afecta velocidad, no es una clonación de timbre.
 
-La ficha incluida declara dataset Apache-2.0; conservar los avisos del archivo.
-[Ficha del modelo](https://huggingface.co/rhasspy/piper-voices/blob/main/es/es_MX/claude/high/MODEL_CARD).
+La ficha incluida declara dataset Unlicense; conservar los avisos del archivo.
+[Ficha del modelo](https://huggingface.co/csukuangfj/vits-piper-es_MX-ald-medium/blob/main/MODEL_CARD).
 No se añaden servicios con pruebas temporales. No hay GPU ni entrenamiento.
 
-Medición local de muestra «TARS operativo. Listo para recibir instrucciones.»:
+Medición histórica del perfil Claude anterior (no describe el nuevo perfil Ald): muestra «TARS operativo. Listo para recibir instrucciones.»:
 modelo mexicano, carga + síntesis 2,03 s de pared / 1,984 s CPU / RSS final 136,6 MiB.
 Es solo el proceso de síntesis, no un pico agregado ni una medición de Render.
 El modelo anterior de España marcó 1,84 s / 141 MiB RSS en otra ejecución local.

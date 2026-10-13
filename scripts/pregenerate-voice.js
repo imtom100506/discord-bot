@@ -29,7 +29,7 @@ async function main() {
     // Cinco ranuras exactas de un segundo. Recorta solo silencio en cada número.
     let rate, countdown;
     for (const [index, number] of ['cinco', 'cuatro', 'tres', 'dos', 'uno'].entries()) {
-      const digit = await audio.synthesize(number, AbortSignal.timeout(90000));
+      const digit = require('node:child_process').execFileSync(process.execPath, [require.resolve('../src/ttsLocal'), number, '--countdown-number'], { windowsHide: true, timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
       rate ||= digit.readUInt32LE(24);
       if (digit.readUInt32LE(24) !== rate) throw Error('Frecuencias distintas en cuenta regresiva');
       countdown ||= Buffer.alloc(rate * 2 * 5);

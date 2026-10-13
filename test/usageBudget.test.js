@@ -68,3 +68,16 @@ test('balance reflects reservations, actual usage and rolling expiry; unknown is
   time = 86400000;
   assert.equal(budget.status().tokens_restantes, 1000);
 });
+
+
+test('STT quota can exceed LLM quota independently and errors identify exact scope', async () => {
+  let time = 1000, saved;
+  const budget = createUsageBudget({ now: () => time, minuteRequests: 6, sttMinuteRequests: 20,
+    store: { read: async () => saved, write: async value => { saved = value; } } });
+  for (let i = 0; i < 20; i++) await budget.reserve({ audio: 10 });
+  for (let i = 0; i < 6; i++) await budget.reserve({ tokens: 100 });
+  time += 45000;
+  await assert.rejects(budget.reserve({ tokens: 100 }), e => e.scope === 'llm' && e.retryAfterMs === 15000 && /15 segundos/.test(e.message));
+  await assert.rejects(budget.reserve({ audio: 10 }), e => e.scope === 'stt' && /transcripciones/.test(e.message));
+  time += 15000; await budget.reserve({ audio: 10 }); await budget.reserve({ tokens: 100 });
+});

@@ -4,7 +4,7 @@ Los binarios se excluyen de Git. `hey-tars.txt` define pronunciaciones mediante
 fonemas ingleses: HH EY1 T AA1 R Z y variantes con S/sin H inicial.
 
 Detección: sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20, Apache-2.0.
-Voz: vits-piper-es_MX-claude-high-int8. Dataset Apache-2.0 según MODEL_CARD incluido.
+Voz: vits-piper-es_MX-ald-medium. Dataset Unlicense según MODEL_CARD incluido.
 Perfil y SHA-256 fijados en src/voiceProfile.js. Es una aproximación mexicana;
 no es una clonación ni un modelo del actor de TARS. Los avisos vienen en el archivo descargado.
 Motor: sherpa-onnx-node 1.13.8, Apache-2.0. Conserva los avisos de los archivos.

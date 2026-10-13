@@ -38,11 +38,10 @@ function createOperationalLog(client, { env = process.env, maxPending = 100, int
     }
     pending++;
     const data = { ...context.getStore(), resultado: 'registrado', ...details };
-    const lines = Object.entries(data).filter(([key]) => !/token|secret|password|api.?key|mensaje|respuesta|transcrip|audio|contenido|texto/i.test(key))
-      .map(([key, value]) => `${clean(key)}: ${clean(value)}`);
-    const content = `[${new Date().toISOString()}] **${clean(event)}**\n${lines.join('\n')}`.slice(0, 1900);
+    const timestamp = Date.now();
     const nonce = require('node:crypto').randomBytes(12).toString('hex');
     const task = tail.then(async () => {
+      const content = await require('./logFormat').formatOperational(client, event, data, clean, timestamp);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const channel = await resolve(data);

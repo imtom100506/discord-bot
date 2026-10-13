@@ -1,5 +1,5 @@
 // Multiplexación con identidad: nunca suma señales de distintos hablantes.
-function createAudioMixerManager({ receiver, api, decoderFactory, vadFactory, eligible, acceptAudio = () => true, createStreaming,
+function createAudioMixerManager({ receiver, api, decoderFactory, vadFactory, eligible, acceptAudio = () => true, isPlayback = () => false, createStreaming,
   onPartial = () => {}, onUtterance, onError = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
   endpointMs = 240, maxUsers = 100, maxPending = 8 }) {
   const users = new Map(), audioBuffers = new Map(), inflight = new Set(), streams = new Set();
@@ -8,7 +8,7 @@ function createAudioMixerManager({ receiver, api, decoderFactory, vadFactory, el
   function reset(state) {
     clearTimer(state.timer);
     state.chunks = []; state.bytes = 0; state.voiced = 0; state.started = false; state.pre = Buffer.alloc(0);
-    state.lastSpeech = 0; state.stream = undefined; state.vad?.reset(); audioBuffers.delete(state.userId);
+    state.priorityOnly = false; state.lastSpeech = 0; state.stream = undefined; state.vad?.reset(); audioBuffers.delete(state.userId);
   }
   function cancel(userId) {
     const state = users.get(userId);
@@ -21,14 +21,14 @@ function createAudioMixerManager({ receiver, api, decoderFactory, vadFactory, el
   function finish(state) {
     if (!state.started || state.closed) return;
     const pcm = Buffer.concat(state.chunks, state.bytes);
-    const stream = state.stream, endedAt = state.lastSpeech;
+    const stream = state.stream, endedAt = state.lastSpeech, priorityOnly = state.priorityOnly;
     const valid = state.voiced >= 16000 && pcm.length >= 16000; // >= 0.5 s de voz local a 16 kHz PCM16
     reset(state);
     if (!valid || stopped || !eligible(state.userId) || inflight.size >= maxPending || (createStreaming && !stream)) { closeStream(stream); return; }
     const job = { userId: state.userId, abort: new AbortController() };
     inflight.add(job);
     const abort = () => closeStream(stream); job.abort.signal.addEventListener('abort', abort, { once: true });
-    Promise.resolve().then(() => onUtterance({ userId: state.userId, pcm, stream, endedAt, signal: job.abort.signal }))
+    Promise.resolve().then(() => onUtterance({ userId: state.userId, pcm, stream, endedAt, priorityOnly, signal: job.abort.signal }))
       .catch(error => { if (!job.abort.signal.aborted && !stopped) onError(error); })
       .finally(() => { job.abort.signal.removeEventListener('abort', abort); closeStream(stream); inflight.delete(job); });
   }
@@ -61,6 +61,7 @@ function createAudioMixerManager({ receiver, api, decoderFactory, vadFactory, el
               if (!speech) continue;
               state.started = true; state.chunks.push(state.pre); state.bytes = state.pre.length; state.pre = Buffer.alloc(0);
             } else { state.chunks.push(frame); state.bytes += frame.length; if (state.stream) state.stream.write(frame); }
+            state.priorityOnly ||= isPlayback();
             if (speech) { state.voiced += frame.length; state.lastSpeech = now(); }
             audioBuffers.set(userId, state.chunks);
             if (state.voiced >= 16000 && !state.stream && createStreaming && streams.size < maxPending && inflight.size < maxPending) {

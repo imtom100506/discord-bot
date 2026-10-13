@@ -18,13 +18,13 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
       await s.channel.send({ content, allowedMentions: { parse: [] } }).catch(error => log(s, 'voz_chat_error', { error: error.message }));
     }
   };
-  const log = (s, event, data = {}) => sendLog(event, { servidor_id: s.voiceChannel.guild.id, canal_id: s.voiceChannel.id, ...data });
+  const log = (s, event, data = {}) => sendLog(event, { servidor_id: s.voiceChannel.guild.id, canal_id: s.voiceChannel.id, canal_nombre: s.voiceChannel.name, ...data });
   function leave(s = session, reason = 'salida') {
     if (!s || s.closed) return;
     s.closed = true; clearTimer(s.countdownTimer); s.contextAbort.abort(); s.abort.abort(); s.mixer?.stop(); clearTimer(s.idleTimer);
     s.player.stop(true); s.resource?.playStream?.destroy(); s.connection.destroy(); audio.close?.();
     s.subscription?.unsubscribe(); s.connection.removeAllListeners('stateChange');
-    s.pipeline?.clear(s.key); s.buttons.clear(); s.manual.clear();
+    s.pipeline?.clear(s.key); s.buttons.clear(); s.manual.clear(); s.latest.clear();
     log(s, 'voz_desconexion', { motivo: reason, usuario_id: s.controlUser, resultado: 'desconectado' });
     if (session === s) session = undefined;
   }
@@ -42,10 +42,12 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
     signal.throwIfAborted();
     if (s.closed || s.countdown || s.muted || !text) return;
     // TTS por frases: no se corta una respuesta larga en el límite del sintetizador.
+    const tooLate = () => started && now() - started.endedAt > 15000;
+    if (tooLate()) { await tell(s, text); return; }
     const parts = speechParts(text);
     for (const part of parts) {
       signal.throwIfAborted();
-      let wav;
+      let wav; const synthesisStarted = now();
       try { wav = await audio.synthesize(part, signal); }
       catch (error) {
         signal.throwIfAborted();
@@ -54,6 +56,11 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
         return;
       }
       signal.throwIfAborted(); if (s.closed || s.countdown || s.muted) return;
+      if (tooLate()) {
+        await tell(s, text);
+        log(s, 'voz_respuesta_texto', { motivo: 'síntesis tardía; audio omitido', demora_ms: now() - started.endedAt });
+        return;
+      }
       s.resource = api.createAudioResource(Readable.from([wav]), { inputType: api.StreamType.Arbitrary, inlineVolume: true });
       s.resource.volume?.setVolume(s.volume);
       const resource = s.resource;
@@ -66,7 +73,7 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
         if (started && !started.logged) {
           started.logged = true;
           const elapsed = now() - started.endedAt;
-          console.info('[voz:latencia]', JSON.stringify({ fin_a_reproduccion_ms: elapsed, objetivo_ms: 800, cumple: elapsed < 800 }));
+          console.info('[voz:latencia]', JSON.stringify({ fin_a_reproduccion_ms: elapsed, stt_ms: started.sttMs, cola_ms: started.queueMs, modelo_ms: started.modelMs, sintesis_ms: now() - synthesisStarted, objetivo_ms: 800, cumple: elapsed < 800 }));
         }
         await api.entersState(s.player, api.AudioPlayerStatus.Idle, AbortSignal.any([signal, AbortSignal.timeout(45000)]));
       } finally {
@@ -85,8 +92,10 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
   }
   function startMixer(s) {
     s.mixer = createAudioMixerManager({ receiver: s.connection.receiver, api, decoderFactory, vadFactory, now, setTimer, clearTimer,
+      endpointMs: Math.max(240, Math.min(1500, Number(env.TARS_VAD_ENDPOINT_MS) || 650)),
       eligible: id => !s.closed && s.listening && now() >= s.blockedUntil && id !== client.user.id && !s.excluded.has(id) &&
         s.voiceChannel.members.has(id) && !s.voiceChannel.members.get(id).user.bot,
+      isPlayback: () => s.speaking,
       acceptAudio: () => true, // Las órdenes prioritarias necesitan recepción durante la reproducción.
       createStreaming: audio.createStreaming ? options => audio.createStreaming({ ...options, signal: s.abort.signal }) : undefined,
       onPartial: (id, text) => s.pipeline.prepare(s.key, id, text),
@@ -97,11 +106,21 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
   }
   function failure(s, error) {
     if (s.closed || error.name === 'AbortError') return;
-    log(s, 'voz_error', { codigo: error.code || 'VOICE_PIPELINE', error: error.message });
-    if (error.code === 'AI_BUDGET') { s.blockedUntil = now() + (error.retryAfterMs || 30000); s.pauseMessage = error.message; }
+    if (error.code === 'AI_BUDGET') {
+      const until = now() + (error.retryAfterMs || 30000);
+      if (error.scope === 'llm') s.modelBlockedUntil = Math.max(s.modelBlockedUntil || 0, until);
+      else s.blockedUntil = Math.max(s.blockedUntil, until);
+      s.pauseMessage = error.message;
+      // Invalida respuestas anteriores sin cerrar STT cuando solo se agotó LLM.
+      s.epoch++; s.contextAbort.abort(); s.contextAbort = new AbortController();
+      s.latest.clear();
+    }
+    if (now() < s.nextError) return;
+    log(s, 'voz_error', { codigo: error.code || 'VOICE_PIPELINE', error: error.message,
+      limite: error.reason, servicio: error.scope, espera_segundos: error.retryAfterMs && Math.ceil(error.retryAfterMs / 1000) });
     if (now() >= s.nextError) {
-      s.nextError = now() + 10000;
-      void tell(s, error.code === 'AI_BUDGET' ? error.message : 'No pude completar la respuesta de voz. Usa /escuchar para reintentar.');
+      s.nextError = now() + Math.max(10000, error.retryAfterMs || 0);
+      void tell(s, ['AI_BUDGET', 'VOICE_STALE'].includes(error.code) ? error.message : 'No pude completar la respuesta de voz. Usa /escuchar para reintentar.');
     }
   }
   async function execute(s, intent) {
@@ -120,10 +139,11 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
       default: return 'Control no disponible.';
     }
   }
-  async function receive(s, { userId, pcm, stream, endedAt, signal: captureSignal }) {
-    const receivingDuringPlayback = s.speaking, captureEpoch = s.epoch;
+  async function receive(s, { userId, pcm, stream, endedAt, priorityOnly, signal: captureSignal }) {
+    const receivingDuringPlayback = priorityOnly || s.speaking, captureEpoch = s.epoch;
     const signal = AbortSignal.any([s.abort.signal, captureSignal]);
     signal.throwIfAborted();
+    const sttStarted = now();
     const text = stream ? await stream.finish() : await audio.transcribe(pcm, signal);
     signal.throwIfAborted();
     if (!text || s.excluded.has(userId) || !s.listening) return;
@@ -152,15 +172,28 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
       if (reply && !s.closed) await queueSpeech(s, reply, turnSignal, { endedAt });
       return;
     }
-    if (s.pending >= 8) throw Object.assign(Error('Cola de voz llena'), { code: 'AI_BUSY' });
-    const epoch = s.epoch;
+    if (shouldRespond && intent.kind !== 'command' && now() < (s.modelBlockedUntil || 0)) return;
+    if (s.pending >= 3) throw Object.assign(Error('Cola de voz llena'), { code: 'AI_BUSY' });
+    const epoch = s.epoch, ticket = Symbol(), enqueuedAt = now(), sttMs = now() - sttStarted;
+    s.latest.set(userId, ticket);
     s.pending++;
     const job = s.turns.then(async () => {
       const signal = turnSignal;
       signal.throwIfAborted();
-      if (epoch !== s.epoch || s.excluded.has(userId) || !s.listening || !s.voiceChannel.members.has(userId) || now() - endedAt > 15000) return;
+      if (s.latest.get(userId) !== ticket) return;
+      if (epoch !== s.epoch || s.excluded.has(userId) || !s.listening || !s.voiceChannel.members.has(userId)) return;
+      if (now() - endedAt > 15000) {
+        failure(s, Object.assign(Error('La pregunta quedó esperando demasiado. Vuelve a preguntarme; no reproduciré una respuesta atrasada.'), { code: 'VOICE_STALE' }));
+        return;
+      }
+      const modelStarted = now();
       const result = await s.pipeline.run({ key: s.key, userId, name, text, signal, addressed });
-      if (result?.reply) await queueSpeech(s, result.reply, signal, { endedAt });
+      if (result?.reply) {
+        if (now() - endedAt > 15000) {
+          await tell(s, result.reply);
+          log(s, 'voz_respuesta_texto', { usuario_id: userId, motivo: 'respuesta tardía; audio omitido', demora_ms: now() - endedAt });
+        } else await queueSpeech(s, result.reply, signal, { endedAt, sttMs, queueMs: modelStarted - enqueuedAt, modelMs: now() - modelStarted });
+      }
       signal.throwIfAborted();
       if (epoch !== s.epoch || s.excluded.has(userId)) return;
       const tagged = memory.add(s.key, { userId, name, role: 'user', text });
@@ -177,7 +210,7 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
       }
       save(s);
     });
-    s.turns = job.catch(() => {}).finally(() => { s.pending--; });
+    s.turns = job.catch(() => {}).finally(() => { s.pending--; if (s.latest.get(userId) === ticket) s.latest.delete(userId); });
     void job.catch(error => failure(s, error)); // Libera la ranura STT: las respuestas no bloquean nuevos controles.
   }
   async function handle(ctx, command) {
@@ -201,12 +234,14 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
         s = { key, connection, voiceChannel: channel, channel: ctx.channel, player: api.createAudioPlayer(), abort: new AbortController(), contextAbort: new AbortController(),
           closed: false, listening: true, muted: false, speaking: false, echoUntil: 0, volume: 1, lastCall: now(),
           blockedUntil: 0, nextError: 0, pending: 0, speechPending: 0, epoch: 0, turns: Promise.resolve(), speechQueue: Promise.resolve(),
-          excluded: new Set(memory.excluded(key)), manual: new BoundedMap(64), buttons: new BoundedMap(20) };
+          latest: new Map(), excluded: new Set(memory.excluded(key)), manual: new BoundedMap(64), buttons: new BoundedMap(20) };
         session = s;
         s.player.on('error', error => { failure(s, error); if (!s.countdown) leave(s); }); connection.on('error', error => { failure(s, error); leave(s); });
         connection.on('stateChange', (_, state) => { if (state.status === api.VoiceConnectionStatus.Disconnected) leave(s); });
         await Promise.all([audio.check(), api.entersState(connection, api.VoiceConnectionStatus.Ready, 15000)]);
-        s.abort.signal.throwIfAborted(); s.subscription = connection.subscribe(s.player);
+        s.abort.signal.throwIfAborted();
+        void Promise.resolve(audio.warm?.()).catch(error => log(s, 'voz_preparacion_error', { error: error.message }));
+        s.subscription = connection.subscribe(s.player);
         log(s, 'voz_conexion', { usuario_id: ctx.user.id, resultado: 'conectado' });
         s.pipeline = createLowLatencyPipeline({ askAI: (id, text, options) => askAI(id, text, { ...options, onProviderFailure: data => log(s, 'ia_proveedor_error', { usuario_id: id, ...data }) }), memory, tools, now, wakeRequired: env.TARS_WAKE_REQUIRED !== 'false', humor: Math.max(0, Math.min(100, Number(env.TARS_HUMOR ?? 75) || 0)), execute: intent => execute(s, intent) });
         await ctx.reply('En línea. Escuchando a todo el canal. Voz procesada por STT externo. /salir detiene la recepción y /reset borra tu memoria local. Di TARS, pregunta directamente o usa /escuchar.');
@@ -223,9 +258,10 @@ function createChannelVoice({ client, askAI, audio, recordConversation = () => {
     if (command === 'salir') { leave(s); return ctx.reply('Desconectado del canal de voz.'); }
     if (s.countdown) return ctx.reply('Cuenta regresiva en curso. /salir desconecta inmediatamente.');
     if (s.excluded.has(ctx.user.id)) return ctx.reply('Tu voz está excluida. La exclusión guardada sigue vigente.');
-    if (now() < s.blockedUntil) return ctx.reply(s.pauseMessage || 'Espera a que se restablezca la cuota de voz.');
+    if (now() < s.blockedUntil) return ctx.reply(`Transcripción en pausa. Reintenta en ${Math.ceil((s.blockedUntil - now()) / 1000)} segundos.`);
     if (!s.listening) { s.listening = true; s.connection.rejoin?.({ selfDeaf: false }); startMixer(s); }
     s.muted = false; s.manual.set(ctx.user.id, now() + 12000); s.mixer.subscribe(ctx.user.id); s.lastCall = now(); schedule(s);
+    if (now() < (s.modelBlockedUntil || 0)) return ctx.reply(`Te escucho para controles de voz. Las respuestas de IA vuelven en ${Math.ceil((s.modelBlockedUntil - now()) / 1000)} segundos.`);
     return ctx.reply('Te escucho. Tu próxima intervención no necesita decir TARS.');
   }
   async function forget(userId) {

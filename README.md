@@ -6,7 +6,7 @@ Docker instala ffmpeg, Piper y Silero VAD. Una instancia por token;
 atiende un canal de voz a la vez. Este repositorio no implementa TeamSpeak.
 
 La configuración gratuita y el diagnóstico de consistencia están en
-[VOICE.md](VOICE.md). Se usa únicamente Piper es_MX-claude INT8 y Groq Free;
+[VOICE.md](VOICE.md). Se usa únicamente Piper es_MX-ald medium y Groq Free;
 Deepgram se rechaza y no existe fallback a eSpeak. Los WAV habituales se
 pregeneran en el PC con `npm run voice:pregenerate` y se incluyen en Docker.
 
@@ -38,7 +38,7 @@ internamente al ID. No identifica personas distintas compartiendo una cuenta.
 Silero mediante `sherpa-onnx-node` filtra antes de STT; no es solo un umbral de
 energía. Descarta silencio, ruido rechazado por VAD e intervenciones con menos de
 0.5 segundos detectados. Conserva hasta 200 ms de inicio para no cortar consonantes;
-el cierre local espera 240 ms desde la última trama detectada como voz. El modelo
+el cierre local espera 650 ms desde la última trama detectada como voz. El modelo
 además tiene su propio margen de detección. PCM solo vive en RAM.
 
 Límites: 100 suscripciones, 12 segundos por intervención, 8 conexiones STT simultáneas,
@@ -256,3 +256,31 @@ veces ante 429/5xx. Discord.js gestiona sus límites REST. Un error de red ambig
 no se reenvía, para evitar duplicados. Los fallos dejan diagnóstico en consola.
 Los registros incluyen fecha UTC, evento, contexto disponible, resultado y error;
 se omiten mensajes, respuestas y secretos. Los mensajes de bots no ejecutan comandos.
+
+## Diagnóstico de pausas y nueva voz
+
+El aviso AI_BUDGET con reason=requests_minute era un límite interno, independiente
+del saldo diario de tokens. La escucha global puede gastar transcripciones sin
+producir respuestas. Ahora el arranque configura 20 STT/min y 6 LLM/min; son topes
+locales ajustables con TARS_STT_REQUESTS_PER_MINUTE y TARS_LLM_REQUESTS_PER_MINUTE
+(1–60). Se conservan los topes diarios, el registro persistente y los 429 del proveedor.
+Los avisos indican servicio, motivo y segundos de espera; no se reinician cuotas.
+
+TARS_VAD_ENDPOINT_MS=650 agrupa pausas cortas para evitar fragmentar una frase.
+Un límite de LLM invalida trabajo pendiente pero mantiene STT y órdenes locales.
+Un límite de STT sí impide reconocer voz hasta recuperarse: /salir sigue funcionando.
+La cola admite tres turnos; preguntas nuevas del mismo usuario sustituyen turnos
+suyos todavía sin iniciar. Respuestas con más de 15 s se entregan por texto en lugar
+de reproducir audio atrasado. Se registran tiempos STT, cola, modelo, síntesis y
+espera de persistencia de cuotas; el total antiguo no permitía atribuir la demora.
+
+Los logs muestran evento, usuario, nombre enlazado del canal, hora de Discord y
+resultado. El nombre explícito evita depender de una mención que aparezca como
+canal desconocido. Las transcripciones siguen siendo opt-in; el cambio de diseño
+no activa la publicación de conversaciones.
+
+La voz usa ahora Ald (español mexicano), con tono ajustado a 0,84 y velocidad de
+síntesis 1,12. Todos los WAV se regeneraron; la clave de caché cambia con el perfil.
+El modelo se descarga al construir Docker y se verifica con SHA-256. Incluye una
+muestra en audio/tars-ald-grave-demo.wav. La cuenta regresiva tiene cinco segundos
+exactos; sus números se sintetizan más rápido únicamente durante la pregeneración.

@@ -14,9 +14,9 @@ function fixture({ env = {}, send, cached = true, permitted = true } = {}) {
 test('missing ID falls back to existing channel using fetch, with contextual redacted records', async () => {
   const f = fixture({ cached: false, env: { DISCORD_TOKEN: 'secret-token' } });
   await f.log.withContext({ guild: { id: 'g' }, channel: { id: 'v' }, user: { id: 'u' } }, () => f.log('voz_error', { error: 'secret-token failed', mensaje: 'private transcript' }));
-  assert.equal(f.fetches, 1); assert.equal(f.sent.length, 1);
-  assert.match(f.sent[0].content, /servidor_id: g/); assert.match(f.sent[0].content, /canal_id: v/);
-  assert.match(f.sent[0].content, /usuario_id: u/); assert.match(f.sent[0].content, /redactado/);
+  assert.ok(f.fetches >= 1); assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].content, /Servidor:\*\* g/); assert.match(f.sent[0].content, /discord.com\/channels\/g\/v/);
+  assert.match(f.sent[0].content, /<@u>/); assert.match(f.sent[0].content, /redactado/);
   assert.doesNotMatch(f.sent[0].content, /secret-token|private transcript/);
   assert.deepEqual(f.sent[0].allowedMentions.parse, []);
 });
@@ -44,4 +44,14 @@ test('bursts are bounded, serial and do not duplicate successful records', async
   release(); const results = await Promise.all(jobs);
   assert.equal(results.filter(Boolean).length, 3); assert.equal(f.sent.length, 3);
   assert.equal(f.warnings.length, 1);
+});
+
+
+test('formatted log names the originating voice channel instead of an unresolved mention', async () => {
+  const { formatOperational } = require('../src/logFormat');
+  const client = { guilds: { cache: new Map([['g', { name: 'The Goats', channels: { cache: new Map([['v', { name: 'Sala de juegos' }]]) } }]]) } };
+  const text = await formatOperational(client, 'voz_respuesta', { servidor_id: 'g', canal_id: 'v', usuario_id: 'u', resultado: 'completada' }, String, 1000);
+  assert.match(text, /Voz · Respuesta/); assert.match(text, /#Sala de juegos/);
+  assert.match(text, /<@u>/); assert.match(text, /<t:1:f>/);
+  assert.doesNotMatch(text, /desconocida|servidor_id|canal_id/);
 });
