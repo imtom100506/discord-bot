@@ -40,7 +40,6 @@ function bot() {
       if (name === "dotenv") return { config() {} };
       if (name === "discord.js") return { ...discord, Client: function () { return client; } };
       if (name === "./ai") return { clearHistory() {}, askAI: async (...args) => { aiCalls.push(args); return "x".repeat(4200); } };
-      if (name === './operationalLog') return { createOperationalLog: () => Object.assign(async () => {}, { withContext: (ctx, fn) => fn() }) };
       if (name === "./keepAlive") return () => {};
       if (name === "./commandUtils") return utils;
       if (name === "./botCapabilities") return require("../src/botCapabilities");
@@ -183,15 +182,4 @@ test("prefix and slash moderation bypass AI even with command words in the nickn
   await client.listeners("interactionCreate")[0](dm);
   assert.match(dm.replies[0].content, /solo está disponible/);
   assert.equal(aiCalls.length, 0);
-});
-
-test('removed command is absent from help and ignored in slash and prefix', async () => {
-  const { client, aiCalls } = bot();
-  assert.doesNotMatch(require('../src/botCapabilities').HELP, /privacidad/i);
-  const request = interaction('privacidad', 'estado');
-  await client.listeners('interactionCreate')[0](request);
-  assert.equal(request.replies.length, 0);
-  let replies = 0;
-  await client.listeners('messageCreate')[0]({ content: '!privacidad', author: { id: '1' }, channel: { id: 'c' }, reply: async () => { replies++; } });
-  assert.equal(replies, 0); assert.equal(aiCalls.length, 0);
 });

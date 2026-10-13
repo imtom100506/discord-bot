@@ -4,4 +4,3 @@ data/
 models/sherpa-onnx-*/
 models/vits-piper-*/
 models/*.tar.bz2
-models/*.onnx

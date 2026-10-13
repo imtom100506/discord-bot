@@ -2,7 +2,6 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const { withAIRetry } = require('./aiRetry');
 const { responseLimit, compactResponse } = require('./responsePolicy');
 const { BoundedMap } = require('./boundedMap');
-const { readSentenceStream } = require('./optimization/sentenceStream');
 
 const unavailable = () => Object.assign(new Error('Los proveedores de IA no están disponibles.'), { code: 'AI_UNAVAILABLE' });
 const clip = (text, max) => text.length <= max ? text : `${text.slice(0, max / 2)}\n[Contenido recortado]\n${text.slice(-max / 2)}`;
@@ -29,18 +28,16 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     url: `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions`,
     model: '@cf/google/gemma-4-26b-a4b-it', blockedUntil: 0, nextRequest: 0,
   });
-  let queue = Promise.resolve(), voiceQueue = Promise.resolve();
+  let queue = Promise.resolve();
   let pending = 0;
   let budget;
 
-  async function request(provider, messages, voice = false, signal, streaming) {
+  async function request(provider, messages, voice = false, signal) {
     signal?.throwIfAborted();
-    const nextKey = voice ? 'nextVoiceRequest' : 'nextRequest';
-    if (provider[nextKey] > now()) await wait(provider[nextKey] - now(), undefined, { signal });
+    if (provider.nextRequest > now()) await wait(provider.nextRequest - now());
     signal?.throwIfAborted();
-    provider[nextKey] = now() + (voice ? Math.max(0, Number(env.TARS_VOICE_SPACING_MS) || 0) : spacingMs);
-    const body = { model: provider.model, messages, stream: !!streaming };
-    if (streaming && provider.name === 'Groq') body.stream_options = { include_usage: true };
+    provider.nextRequest = now() + spacingMs;
+    const body = { model: provider.model, messages, stream: false };
     if (provider.name === 'Groq') Object.assign(body, {
       max_completion_tokens: voice ? 512 : 2048, reasoning_effort: 'low', include_reasoning: false,
     });
@@ -53,11 +50,6 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
         headers: { Authorization: `Bearer ${provider.key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
       });
-      if (response.ok && streaming) {
-        const result = await readSentenceStream(response, { ...streaming, signal });
-        await reservation?.settle?.(result.usage);
-        return result.text;
-      }
       // Leer el cuerpo dentro del mismo manejo de errores y timeout.
       const data = await response.json();
       if (response.ok && data.success !== false) await reservation?.settle?.(data.usage?.total_tokens);
@@ -75,32 +67,30 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       return text;
     } catch (error) {
       signal?.throwIfAborted();
-      if (error.status || error.code === 'AI_PARTIAL') throw error;
+      if (error.status) throw error;
       // Fallos de red, JSON inválido y timeout son recuperables.
       throw Object.assign(new Error(`${provider.name}: fallo de conexión o respuesta`), { status: 503 });
     }
   }
 
-  async function generate(messages, voice = false, signal, streaming, onProviderFailure) {
+  async function generate(messages, voice = false, signal) {
     if (!providers.length) throw Object.assign(new Error('Faltan credenciales de IA.'), { code: 'AI_CONFIG' });
     for (const provider of providers) {
       if (provider.blockedUntil > now()) continue;
       try {
-        return voice ? await request(provider, messages, true, signal, streaming) : await withAIRetry(() => request(provider, messages, false, signal), { wait });
+        return voice ? await request(provider, messages, true, signal) : await withAIRetry(() => request(provider, messages, false, signal), { wait });
       } catch (error) {
         signal?.throwIfAborted();
-        if (error.code === 'AI_PARTIAL') throw error;
         if (error.code === 'AI_BUDGET' || error.cause?.code === 'AI_BUDGET') throw error.cause || error;
         const status = error.cause?.status || error.status;
         if (status !== 429) provider.blockedUntil = now() + ([400, 401, 403, 404].includes(status) ? 300000 : 30000);
-        onProviderFailure?.({ proveedor: provider.name, codigo: status || 'conexion', resultado: 'buscando respaldo' });
         console.warn(`[IA] ${provider.name} no disponible (${status || 'conexión'}); buscando respaldo.`);
       }
     }
     throw unavailable();
   }
 
-  function askAI(userId, userMessage, { context = '', brief = false, voice = false, signal, externalHistory, voicePrompt, onSentence, onProviderFailure, detailed = false } = {}) {
+  function askAI(userId, userMessage, { context = '', brief = false, voice = false, signal } = {}) {
     const logBalance = () => {
       if (budget?.logStatus) budget.logStatus();
       else console.info('[IA:saldo]', JSON.stringify({ alcance: 'limite_interno_24h', tokens_restantes: null, estado: 'sin_registro' }));
@@ -111,25 +101,22 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     }
     pending++;
     const enqueued = now();
-    const task = (voice ? voiceQueue : queue).then(async () => {
+    const task = queue.then(async () => {
       signal?.throwIfAborted();
       if (now() - enqueued > 90000) throw Object.assign(new Error('La cola de IA tardó demasiado.'), { code: 'AI_BUSY' });
-      const history = externalHistory || histories.get(userId) || [];
+      const history = histories.get(userId) || [];
       const current = { userId, cleared: false };
-      if (!externalHistory) activeHistory = current;
+      activeHistory = current;
       const input = clip(String(userMessage), voice ? 800 : 6000);
-      const limit = voice ? (detailed || responseLimit(input) > 600 ? 1500 : 360) : brief ? 600 : responseLimit(input);
-      const prompt = voice ? voicePrompt || 'Eres TARS, robot con humor seco. Conserva el idioma del usuario. Responde con 1-2 frases breves; amplía cuando la pregunta necesite explicación. Sin listas, Markdown ni saludos repetidos. Sigue el hilo; aclara solo si hace falta. No ejecutas acciones ni inventas recuerdos.' : systemPrompt;
-      const messages = [{ role: 'system', content: `${prompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...(voice ? history.slice(externalHistory ? -6 : -2).map(msg => ({ role: msg.role, content: clip(msg.content, 500) })) : history)];
+      const limit = voice ? 180 : brief ? 600 : responseLimit(input);
+      const prompt = voice ? 'Eres TARS, robot con humor seco. Habla español conversacional: 1-2 frases breves, directas y listas para voz. Sin listas, Markdown ni saludos repetidos. Sigue el hilo; aclara solo si hace falta. No ejecutas acciones ni inventas recuerdos.' : systemPrompt;
+      const messages = [{ role: 'system', content: `${prompt}\nLímite de esta respuesta: ${limit} caracteres. Termina tus frases dentro de ese espacio.` }, ...(voice ? history.slice(-2).map(msg => ({ ...msg, content: clip(msg.content, 500) })) : history)];
       messages.push({ role: 'user', content: context ? `Contexto del servidor:\n${clip(context, 3000)}\n\nPregunta: ${input}` : input });
       let reply;
-      try {
-        const generated = await generate(messages, voice, signal, onSentence ? { onSentence, limit } : undefined, onProviderFailure);
-        reply = voice || onSentence ? generated : compactResponse(generated, limit);
-      }
-      finally { if (activeHistory === current) activeHistory = undefined; }
+      try { reply = compactResponse(await generate(messages, voice, signal), limit); }
+      finally { activeHistory = undefined; }
       // No restaurar memoria si el usuario la borró mientras esperaba la respuesta.
-      if (!current.cleared && !externalHistory) {
+      if (!current.cleared) {
         const updated = [...history, { role: 'user', content: input }, { role: 'assistant', content: reply }];
         let characters = updated.reduce((sum, msg) => sum + msg.content.length, 0);
         while (updated.length > 8 || characters > 4000) {
@@ -140,8 +127,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       }
       return reply;
     }).finally(logBalance);
-    const next = task.catch(() => {}).finally(() => { pending--; });
-    if (voice) voiceQueue = next; else queue = next;
+    queue = task.catch(() => {}).finally(() => { pending--; });
     return task;
   }
 

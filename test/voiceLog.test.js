@@ -10,7 +10,7 @@ test('voice text goes only to logs-tars in the originating guild with mentions d
     record({ guildId: 'guild', channelId: 'voice', userId: 'human', role: 'user', text: 'Hola @everyone' }),
     record({ guildId: 'guild', channelId: 'voice', userId: 'human', role: 'assistant', text: 'En línea.' }),
   ]);
-  assert.equal(sent.length, 2); assert.match(sent[0].content, /<@human>.*discord.com\/channels\/guild\/voice/);
+  assert.equal(sent.length, 2); assert.match(sent[0].content, /<@human>.*<#voice>/);
   assert.match(sent[1].content, /TARS/);
   assert.deepEqual(sent[0].allowedMentions, { parse: [] });
 });

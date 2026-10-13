@@ -1,8 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const KWS_DIR = 'sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20';
-const { profile } = require('./voiceProfile');
-const TTS_DIR = profile.model;
+const TTS_DIR = 'vits-piper-es_ES-davefx-medium-int8';
 const root = path.resolve(__dirname, '../models');
 function required(file) {
   if (!fs.existsSync(file)) throw new Error('Faltan modelos locales. Ejecuta npm run models:download o reconstruye Docker.');
@@ -50,7 +49,7 @@ function createWakeFactory(env = process.env) {
 }
 function ttsConfig() {
   const model = name => required(path.join(root, TTS_DIR, name));
-  return { model: { vits: { model: model(profile.modelFile), tokens: model('tokens.txt'), dataDir: model('espeak-ng-data'),
-    noiseScale: profile.noiseScale, noiseScaleW: profile.noiseScaleW, lengthScale: profile.lengthScale }, numThreads: 1, provider: 'cpu', debug: false }, maxNumSentences: 1 };
+  return { model: { vits: { model: model('es_ES-davefx-medium.onnx'), tokens: model('tokens.txt'), dataDir: model('espeak-ng-data'),
+    noiseScale: 0.5, noiseScaleW: 0.6, lengthScale: 1 }, numThreads: 1, provider: 'cpu', debug: false }, maxNumSentences: 1 };
 }
 module.exports = { createWakeFactory, kwsConfig, ttsConfig, KWS_DIR, TTS_DIR };

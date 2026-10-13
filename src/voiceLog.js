@@ -14,10 +14,9 @@ function createVoiceLog(client) {
       let channels = matches(guild.channels.cache);
       if (!channels.length) channels = matches(await guild.channels.fetch());
       if (channels.length !== 1) throw Error('Debe existir un único canal de texto logs-tars');
-      const origin = await require('./logFormat').channelLabel(client, guildId, channelId);
       const speaker = role === 'assistant' ? 'TARS' : `<@${userId}>`;
       await channels[0].send({
-        content: `**Voz · ${speaker}** · ${origin} · <t:${Math.floor(Date.now() / 1000)}:f>\n${String(text).slice(0, 1500)}`,
+        content: `**Voz · ${speaker}** · <#${channelId}> · ${new Date().toISOString()}\n${String(text).slice(0, 1500)}`,
         allowedMentions: { parse: [] },
       });
     }).catch(error => console.warn('[voz:registro]', error.code || 'No se pudo enviar a logs-tars; revisa el canal y sus permisos.'))

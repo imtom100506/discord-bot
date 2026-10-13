@@ -52,19 +52,18 @@ test('short quiet speech survives surrounding silence; brief clicks do not', () 
   assert.equal(trimSpeech(Buffer.alloc(3)).length, 0);
 });
 
-test('neural TTS retries once then fails without switching engine or network', async () => {
+test('neural TTS has bounded runtime and falls back locally without a network request', async () => {
   const calls = [];
   const audio = createVoiceAudio({ env: { TARS_TTS_ENGINE: 'piper' },
-    neural: { synthesize: async () => { calls.push('neural'); throw Error('timeout'); }, close() {} },
+    neural: { synthesize: async () => { throw Error('timeout'); }, close() {} },
     fetchImpl: async () => { throw Error('unexpected network'); },
     runImpl: async (file, args, options) => {
       calls.push({ file, args, options });
       return { stdout: Buffer.from('wav') };
     } });
-  await assert.rejects(audio.synthesize('Misión lista.', new AbortController().signal), /timeout/);
-  assert.deepEqual(calls, ['neural', 'neural']);
-  await assert.rejects(audio.synthesize('Otra.', new AbortController().signal), /temporalmente/);
-  assert.equal(calls.length, 2);
+  assert.equal((await audio.synthesize('Misión lista.', new AbortController().signal)).toString(), 'wav');
+  assert.equal(calls[0].options.timeout, 10000);
+  assert.ok(calls[0].args.includes('es-419+m3'));
 });
 
 test('leaving during neural speech generation prevents fallback', async () => {
@@ -100,11 +99,11 @@ function fixture(overrides = {}) {
   const guild = { id: 'guild', members: { fetch: async () => ({ voice: { channel } }), me: {} } };
   const channel = { id: 'voice', type: 2, guild, permissionsFor: () => ({ has: () => true }), members: new Map([['human', { user: { bot: false } }]]) };
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
-  const voice = createVoice({ globalListening: false, env: overrides.env || {}, enabled: true, client: { user: { id: 'bot' } }, api,
+  const voice = createVoice({ enabled: true, client: { user: { id: 'bot' } }, api,
     wakeFactory: overrides.wakeFactory,
     recordConversation: overrides.recordConversation,
     askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
-    audio: { countdown: overrides.countdown || (async () => Buffer.from('countdown')), check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
+    audio: { check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
     clearTimer: timer => timers.delete(timer) });
   async function advance(ms) {
@@ -298,33 +297,30 @@ test('manual capture takes a live detector stream instead of subscribing to its 
   assert.deepEqual(received, [Buffer.from([7, 8, 9, 10])]); f.voice.leave();
 });
 
-test('first sound waits for neural warmup; repeats use identical cached WAV', async () => {
+test('light voice is available while neural model loads, then neural voice resumes', async () => {
   let ready, neuralCalls = 0;
   const audio = createVoiceAudio({ env: {}, neural: {
     warm: () => new Promise(resolve => { ready = resolve; }),
-    synthesize: async () => { neuralCalls++; return wav(Buffer.alloc(200)); }, close() {},
-  }, runImpl: async () => { throw Error('No other engine allowed'); } });
+    synthesize: async () => { neuralCalls++; return Buffer.from('neural'); }, close() {},
+  }, runImpl: async () => ({ stdout: Buffer.from('light') }) });
   const loading = audio.warm();
-  const first = audio.synthesize('Hola nueva prueba', new AbortController().signal);
-  await new Promise(resolve => setTimeout(resolve, 25));
-  assert.equal(neuralCalls, 0);
+  assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'light');
   ready(); await loading;
-  assert.deepEqual(await first, wav(Buffer.alloc(200)));
-  assert.deepEqual(await audio.synthesize('Hola nueva prueba', new AbortController().signal), await first);
+  assert.equal((await audio.synthesize('Hola', new AbortController().signal)).toString(), 'neural');
   assert.equal(neuralCalls, 1); audio.close();
 });
 
 test('audio dependency checks run concurrently, share a result and retry after failure', async () => {
   const releases = []; let calls = 0;
-  const audio = createVoiceAudio({ env: { GROQ_API_KEY: 'test', TARS_TTS_ENGINE: 'piper' },
+  const audio = createVoiceAudio({ env: { GROQ_API_KEY: 'test', TARS_TTS_ENGINE: 'espeak' },
     runImpl: () => { calls++; return new Promise((resolve, reject) => releases.push({ resolve, reject })); } });
   const first = audio.check(); const shared = audio.check();
-  assert.equal(first, shared); assert.equal(calls, 1);
-  releases[0].reject(Error('temporary'));
+  assert.equal(first, shared); assert.equal(calls, 2);
+  releases[0].reject(Error('temporary')); releases[1].resolve();
   await assert.rejects(first);
-  const retry = audio.check(); assert.equal(calls, 2);
-  releases[1].resolve(); await retry;
-  await audio.check(); assert.equal(calls, 2);
+  const retry = audio.check(); assert.equal(calls, 4);
+  releases[2].resolve(); releases[3].resolve(); await retry;
+  await audio.check(); assert.equal(calls, 4);
 });
 
 test('join overlaps preparation and connection and announces readiness only after both', async () => {
@@ -339,7 +335,7 @@ test('join overlaps preparation and connection and announces readiness only afte
 
 test('conversation log reuses existing text even when answering is blocked', async () => {
   const records = []; let calls = 0;
-  const f = fixture({ env: { TARS_VOICE_LOG_ENABLED: 'true' }, recordConversation: item => records.push(item), transcribe: async () => 'Hola',
+  const f = fixture({ recordConversation: item => records.push(item), transcribe: async () => 'Hola',
     askAI: async () => { if (++calls === 2) throw Object.assign(Error('Pausa'), { code: 'AI_BUDGET' }); return 'En línea.'; } });
   await f.voice.handle(f.ctx, 'entrar');
   for (let i = 0; i < 2; i++) {
@@ -348,35 +344,4 @@ test('conversation log reuses existing text even when answering is blocked', asy
   }
   assert.deepEqual(records.map(item => [item.role, item.text]), [['user', 'Hola'], ['assistant', 'En línea.'], ['user', 'Hola']]);
   assert.equal(calls, 2); f.voice.leave();
-});
-
-
-test('manual legacy spoken exit and countdown never invoke conversational model', async () => {
-  for (const text of ['TARS salte', 'TARS autodestrucción']) {
-    let calls = 0;
-    const f = fixture({ transcribe: async () => text, askAI: async () => { calls++; return 'Unexpected'; } });
-    await f.voice.handle(f.ctx, 'entrar');
-    const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
-    f.capture.end(Buffer.alloc(16000)); await pending;
-    if (text.includes('autodestrucción')) {
-      assert.equal(f.destroyed, 0); await f.advance(4999); assert.equal(f.destroyed, 0); await f.advance(1);
-    }
-    assert.equal(f.destroyed, 1); assert.equal(calls, 0);
-    assert.equal(f.receiver.speaking.listenerCount('start'), 0);
-  }
-});
-
-test('legacy receives priority exit during an outstanding model answer', async () => {
-  let text = 'TARS explica Marte', signal, release, calls = 0;
-  const f = fixture({ transcribe: async () => text, askAI: async (id, question, options) => {
-    calls++; signal = options.signal; await new Promise(resolve => { release = resolve; }); return 'Late';
-  } });
-  await f.voice.handle(f.ctx, 'entrar');
-  const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
-  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
-  text = 'TARS salte'; f.receiver.speaking.emit('start', 'human');
-  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
-  assert.equal(f.destroyed, 1); assert.equal(signal.aborted, true);
-  release(); await pending; assert.equal(calls, 1);
-  assert.equal(f.receiver.speaking.listenerCount('start'), 0);
 });

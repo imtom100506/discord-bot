@@ -1,6 +1,6 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
-const { askAI: rawAskAI, clearHistory, setBudget } = require("./ai");
+const { askAI, clearHistory, setBudget } = require("./ai");
 const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse, appendContext } = require("./commandUtils");
 const { BoundedMap } = require("./boundedMap");
@@ -28,16 +28,26 @@ const muteStateChannel = process.env.TARS_STATE_CHANNEL_ID || process.env.LOG_CH
 const textMutes = createTextMutes({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel) : undefined });
 const channelContext = new BoundedMap(200);
 const voiceEnabled = process.env.TARS_VOICE_ENABLED === 'true';
-const rate = (key, fallback) => { const value = Number(process.env[key]); return Number.isInteger(value) && value > 0 && value <= 60 ? value : fallback; };
-const budget = createUsageBudget({ minuteRequests: rate('TARS_LLM_REQUESTS_PER_MINUTE', 6), sttMinuteRequests: rate('TARS_STT_REQUESTS_PER_MINUTE', 20), store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
+const budget = createUsageBudget({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
   global.fetch, 'TARS · Presupuesto IA · No borrar', 'tars-usage.json') : undefined });
 if (voiceEnabled) setBudget(budget);
-const sendLog = require('./operationalLog').createOperationalLog(client);
-const askAI = (id, text, options = {}) => rawAskAI(id, text, { onProviderFailure: data => sendLog('ia_proveedor_error', { usuario_id: id, ...data }), ...options });
-const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client), sendLog });
+const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client) });
 client.on('voiceStateUpdate', (oldState, newState) => voice.onVoiceState(oldState, newState));
 process.once('SIGTERM', () => { voice.leave(); client.destroy(); process.exit(0); });
 process.once('SIGINT', () => { voice.leave(); client.destroy(); process.exit(0); });
+
+async function sendLog(type, data) {
+  if (!process.env.LOG_CHANNEL_ID) return;
+  try {
+    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
+    if (!channel?.isTextBased() || typeof channel.send !== "function") return;
+    const timestamp = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
+    const details = Object.entries(data).map(([key, value]) => `${key}: ${String(value).slice(0, 400)}`).join("\n");
+    await channel.send({ content: `[${timestamp}] **${type.toUpperCase()}**\n${details}`.slice(0, 1900), allowedMentions: { parse: [] } });
+  } catch (error) {
+    console.error("Error enviando log:", error.message);
+  }
+}
 
 const commands = [
   ...['entrar', 'escuchar', 'salir'].map(name => new SlashCommandBuilder().setName(name)
@@ -62,7 +72,7 @@ client.once("ready", async () => {
   void sendLog("conexion", { bot: client.user.tag, servidores: client.guilds.cache.size });
   const restoreMutes = async () => {
     try { await textMutes.sweep(client, sendLog); }
-    catch (error) { void sendLog("mute_restauracion_error", { error: error.message }); }
+    catch (error) { console.error("No se pudo recuperar el registro de mutes de texto:", error.message); }
   };
   await restoreMutes();
   for (const guild of client.guilds.cache.values()) {
@@ -79,7 +89,7 @@ client.once("ready", async () => {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
   } catch (error) {
-    void sendLog("registro_comandos_error", { error: error.message });
+    console.error("Error registrando comandos:", error.message);
   }
 });
 
@@ -142,7 +152,6 @@ async function execute(ctx, command, argument) {
   if (command === "ayuda") return ctx.reply(HELP);
   if (command === "reset") {
     clearHistory(ctx.user.id);
-    await voice.forget?.(ctx.user.id);
     void sendLog("reset", { usuario: ctx.user.username });
     return ctx.reply("Historial borrado. Empezamos de cero.");
   }
@@ -185,16 +194,9 @@ async function execute(ctx, command, argument) {
   await ctx.reply(response);
 }
 
-async function runCommand(ctx, command, argument) {
-  return sendLog.withContext(ctx, async () => {
-    try { await execute(ctx, command, argument); void sendLog('comando', { comando: command, resultado: 'procesado' }); }
-    catch (error) { await handleError(ctx, error); }
-  });
-}
-
 async function handleError(ctx, error) {
   console.error("Error ejecutando comando:", error.message);
-  void sendLog("error", { servidor_id: ctx.guild?.id, canal_id: ctx.channel?.id, usuario_id: ctx.user.id, usuario: ctx.user.username, resultado: "fallido", error: error.cause?.message || error.message || String(error) });
+  void sendLog("error", { usuario: ctx.user.username, error: error.cause?.message || error.message || String(error) });
   if (error.code === 10062 || error.code === 10015) return;
   const response = error.code === 'AI_BUDGET' ? error.message : error.code === "AI_UNAVAILABLE"
     ? "Los proveedores de IA están saturados o alcanzaron su cuota gratuita. Prueba de nuevo más tarde."
@@ -208,10 +210,6 @@ async function handleError(ctx, error) {
 }
 
 client.on("interactionCreate", async interaction => {
-  if (interaction.isButton?.() && interaction.customId?.startsWith('tars_followup:')) {
-    try { await voice.handleSuggestion?.(interaction); } catch (error) { void sendLog('voz_sugerencia_error', { servidor_id: interaction.guildId, canal_id: interaction.channelId, usuario_id: interaction.user.id, error: error.message }); }
-    return;
-  }
   if (!interaction.isChatInputCommand() || !interaction.isRepliable()) return;
   if (!commands.some(command => command.name === interaction.commandName)) return;
   const ctx = {
@@ -227,11 +225,12 @@ client.on("interactionCreate", async interaction => {
   };
   try {
     await interaction.deferReply(["reset", "ayuda"].includes(interaction.commandName) ? { flags: 64 } : {});
+    void sendLog("slash", { usuario: ctx.user.username, comando: interaction.commandName, canal: ctx.channel?.name || "privado" });
     const argument = interaction.commandName === 'borrar' ? `${interaction.options.getUser('usuario') ? `<@${interaction.options.getUser('usuario').id}> ` : ''}${interaction.options.getInteger('cantidad')}` :
       interaction.commandName === "resumir" ? interaction.options.getInteger("cantidad") :
       interaction.commandName === "usuarios" ? interaction.options.getString("rol") :
       interaction.commandName === "tars" ? interaction.options.getString("mensaje") : null;
-    await runCommand(ctx, interaction.commandName, argument);
+    await execute(ctx, interaction.commandName, argument);
   } catch (error) { await handleError(ctx, error); }
 });
 
@@ -249,10 +248,10 @@ client.on("messageCreate", async message => {
     },
   };
   try {
-    if (await sendLog.withContext(ctx, () => confirmDelete(ctx, message.content, { sendLog, clearContext: id => channelContext.delete(id) }))) return;
+    if (await confirmDelete(ctx, message.content, { sendLog, clearContext: id => channelContext.delete(id) })) return;
     if (!match) return;
     if (["tars", "resumir", "usuarios"].includes(match[1].toLowerCase())) await message.channel.sendTyping();
-    await runCommand(ctx, match[1].toLowerCase(), match[2]);
+    await execute(ctx, match[1].toLowerCase(), match[2]);
   } catch (error) { await handleError(ctx, error); }
 });
 
@@ -265,12 +264,6 @@ client.on("error", error => {
   void sendLog("error_fatal", { error: error.message });
 });
 
-client.on('warn', warning => { void sendLog('discord_aviso', { detalle: warning }); });
-client.on('shardDisconnect', (event, shard) => { void sendLog('discord_desconexion', { shard, codigo: event.code }); });
-client.on('shardReconnecting', shard => { void sendLog('discord_reconexion', { shard }); });
-client.on('shardError', (error, shard) => { void sendLog('discord_error', { shard, error: error.message }); });
-client.on('guildCreate', guild => { void sendLog('servidor_entrada', { servidor_id: guild.id }); });
-client.on('guildDelete', guild => { void sendLog('servidor_salida', { servidor_id: guild.id }); });
 keepAlive();
 client.login(process.env.DISCORD_TOKEN).catch(error => {
   console.error("Error al conectar con Discord:", error.message);
