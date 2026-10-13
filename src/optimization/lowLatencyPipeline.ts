@@ -16,7 +16,6 @@ function classify(text: string) {
     ['repeat', /^(?:repite|repitelo|otra vez)$/],
     ['volume_up', /^(?:sube (?:el )?volumen)$/],
     ['volume_down', /^(?:baja (?:el )?volumen)$/],
-    ['leave', /^(?:sal del canal|desconectate)$/],
     ['help', /^(?:ayuda|comandos)$/],
     ['moderation_help', /^(?:mutea|silencia|desmutea|expulsa|saca|banea|borra mensajes)\b.*$/],
     ['ping', /^(?:ping|estado)$/],

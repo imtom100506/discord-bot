@@ -100,11 +100,11 @@ function fixture(overrides = {}) {
   const guild = { id: 'guild', members: { fetch: async () => ({ voice: { channel } }), me: {} } };
   const channel = { id: 'voice', type: 2, guild, permissionsFor: () => ({ has: () => true }), members: new Map([['human', { user: { bot: false } }]]) };
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
-  const voice = createVoice({ globalListening: false, enabled: true, client: { user: { id: 'bot' } }, api,
+  const voice = createVoice({ globalListening: false, env: overrides.env || {}, enabled: true, client: { user: { id: 'bot' } }, api,
     wakeFactory: overrides.wakeFactory,
     recordConversation: overrides.recordConversation,
     askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
-    audio: { check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
+    audio: { countdown: overrides.countdown || (async () => Buffer.from('countdown')), check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
     clearTimer: timer => timers.delete(timer) });
   async function advance(ms) {
@@ -339,7 +339,7 @@ test('join overlaps preparation and connection and announces readiness only afte
 
 test('conversation log reuses existing text even when answering is blocked', async () => {
   const records = []; let calls = 0;
-  const f = fixture({ recordConversation: item => records.push(item), transcribe: async () => 'Hola',
+  const f = fixture({ env: { TARS_VOICE_LOG_ENABLED: 'true' }, recordConversation: item => records.push(item), transcribe: async () => 'Hola',
     askAI: async () => { if (++calls === 2) throw Object.assign(Error('Pausa'), { code: 'AI_BUDGET' }); return 'En línea.'; } });
   await f.voice.handle(f.ctx, 'entrar');
   for (let i = 0; i < 2; i++) {
@@ -348,4 +348,35 @@ test('conversation log reuses existing text even when answering is blocked', asy
   }
   assert.deepEqual(records.map(item => [item.role, item.text]), [['user', 'Hola'], ['assistant', 'En línea.'], ['user', 'Hola']]);
   assert.equal(calls, 2); f.voice.leave();
+});
+
+
+test('manual legacy spoken exit and countdown never invoke conversational model', async () => {
+  for (const text of ['TARS salte', 'TARS autodestrucción']) {
+    let calls = 0;
+    const f = fixture({ transcribe: async () => text, askAI: async () => { calls++; return 'Unexpected'; } });
+    await f.voice.handle(f.ctx, 'entrar');
+    const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+    f.capture.end(Buffer.alloc(16000)); await pending;
+    if (text.includes('autodestrucción')) {
+      assert.equal(f.destroyed, 0); await f.advance(4999); assert.equal(f.destroyed, 0); await f.advance(1);
+    }
+    assert.equal(f.destroyed, 1); assert.equal(calls, 0);
+    assert.equal(f.receiver.speaking.listenerCount('start'), 0);
+  }
+});
+
+test('legacy receives priority exit during an outstanding model answer', async () => {
+  let text = 'TARS explica Marte', signal, release, calls = 0;
+  const f = fixture({ transcribe: async () => text, askAI: async (id, question, options) => {
+    calls++; signal = options.signal; await new Promise(resolve => { release = resolve; }); return 'Late';
+  } });
+  await f.voice.handle(f.ctx, 'entrar');
+  const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  text = 'TARS salte'; f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  assert.equal(f.destroyed, 1); assert.equal(signal.aborted, true);
+  release(); await pending; assert.equal(calls, 1);
+  assert.equal(f.receiver.speaking.listenerCount('start'), 0);
 });

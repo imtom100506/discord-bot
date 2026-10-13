@@ -1,6 +1,5 @@
 const VOICE_ROLES = ["Líder", "Sigma"];
 const HELP = "**Comandos disponibles:**\n" +
-  "`/privacidad estado|excluir|incluir|borrar` (también !privacidad) — Uso de voz y memoria local del canal\n" +
   "`/entrar`, `/escuchar`, `/salir` (también con !) — Voz si está habilitada; preguntas de hasta 12 segundos. Salida tras 5 minutos de inactividad. Hey TARS, si está configurado: 8 segundos para continuar tras cada respuesta\n" +
   "`!tars <mensaje>` o `/tars` — Habla con TARS\n" +
   "`!ayuda` o `/ayuda` — Muestra esta lista\n" +
@@ -18,7 +17,7 @@ const HELP = "**Comandos disponibles:**\n" +
 
 const CAPABILITIES = `Funciones reales y únicas de esta instalación de TARS:\n${HELP}
 También se reconoce "resume <cantidad>" dentro de !tars o /tars para resumir mensajes.
-La voz requiere activación en el alojamiento. /entrar conecta, /escuchar activa la siguiente pregunta del solicitante y /salir desconecta. En modo global escucha el canal con VAD local, ignora bots y admite exclusión con /privacidad. Responde a TARS o preguntas directas; configurable. Controles de voz sobre TARS: mute, deafen/deja de escuchar, repite, volumen, humor. No moderan a otros usuarios. Sale tras 5 minutos sin llamados; el interlocutor puede continuar durante 8 segundos. El modo anterior opcional conserva captura manual/Hey TARS. No prometas streaming, herramientas ni detectores sin configuración.
+La voz requiere activación en el alojamiento. /entrar conecta, /escuchar activa la siguiente pregunta del solicitante y /salir desconecta. En modo global escucha el canal con VAD local, ignora bots y respeta las exclusiones persistidas. Responde a TARS o preguntas directas; configurable. Controles de voz sobre TARS: mute, deafen/deja de escuchar, repite, volumen, humor, salida y autodestrucción de broma (cinco segundos y salida). No moderan a otros usuarios. Sale tras 5 minutos sin llamados; el interlocutor puede continuar durante 8 segundos. El modo anterior opcional conserva captura manual/Hey TARS. No prometas streaming, herramientas ni detectores sin configuración.
 El borrado solo se ejecuta con !borrar o /borrar, nunca mediante IA. Examina los últimos 100 mensajes anteriores a la invocación y omite mensajes de 14 días o más. Más de 50 exige confirmación del mismo solicitante en el mismo canal.
 La desconexión de voz exige exactamente una mención de usuario y uno de los roles indicados; no expulsa del servidor.
 Mutea/mute/silencia bloquea solo mensajes, publicaciones e hilos en los canales del servidor, incluido el chat escrito de canales de voz. No afecta hablar ni conectarse a voz y no usa timeout. Duraciones enteras: segundos, minutos, horas o días; abreviaturas s/m/h/d.

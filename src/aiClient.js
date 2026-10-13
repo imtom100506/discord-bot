@@ -81,7 +81,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
     }
   }
 
-  async function generate(messages, voice = false, signal, streaming) {
+  async function generate(messages, voice = false, signal, streaming, onProviderFailure) {
     if (!providers.length) throw Object.assign(new Error('Faltan credenciales de IA.'), { code: 'AI_CONFIG' });
     for (const provider of providers) {
       if (provider.blockedUntil > now()) continue;
@@ -93,13 +93,14 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
         if (error.code === 'AI_BUDGET' || error.cause?.code === 'AI_BUDGET') throw error.cause || error;
         const status = error.cause?.status || error.status;
         if (status !== 429) provider.blockedUntil = now() + ([400, 401, 403, 404].includes(status) ? 300000 : 30000);
+        onProviderFailure?.({ proveedor: provider.name, codigo: status || 'conexion', resultado: 'buscando respaldo' });
         console.warn(`[IA] ${provider.name} no disponible (${status || 'conexión'}); buscando respaldo.`);
       }
     }
     throw unavailable();
   }
 
-  function askAI(userId, userMessage, { context = '', brief = false, voice = false, signal, externalHistory, voicePrompt, onSentence, detailed = false } = {}) {
+  function askAI(userId, userMessage, { context = '', brief = false, voice = false, signal, externalHistory, voicePrompt, onSentence, onProviderFailure, detailed = false } = {}) {
     const logBalance = () => {
       if (budget?.logStatus) budget.logStatus();
       else console.info('[IA:saldo]', JSON.stringify({ alcance: 'limite_interno_24h', tokens_restantes: null, estado: 'sin_registro' }));
@@ -123,7 +124,7 @@ function createAI({ systemPrompt, env = process.env, fetchImpl = global.fetch,
       messages.push({ role: 'user', content: context ? `Contexto del servidor:\n${clip(context, 3000)}\n\nPregunta: ${input}` : input });
       let reply;
       try {
-        const generated = await generate(messages, voice, signal, onSentence ? { onSentence, limit } : undefined);
+        const generated = await generate(messages, voice, signal, onSentence ? { onSentence, limit } : undefined, onProviderFailure);
         reply = voice || onSentence ? generated : compactResponse(generated, limit);
       }
       finally { if (activeHistory === current) activeHistory = undefined; }

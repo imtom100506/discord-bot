@@ -122,6 +122,11 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     queue = result.catch(() => {});
     return result;
   }
-  return { check, transcribe, synthesize, warm, close };
+  async function countdown() {
+    const bytes = await cache.get('TARS_COUNTDOWN_5_SECONDS_V1');
+    if (!bytes) throw Error('Falta audio pregenerado de cuenta regresiva; ejecuta npm run voice:pregenerate.');
+    return bytes;
+  }
+  return { check, transcribe, synthesize, countdown, warm, close };
 }
 module.exports = { wav, hasSpeech, trimSpeech, createVoiceAudio };

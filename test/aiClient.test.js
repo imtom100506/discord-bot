@@ -187,3 +187,13 @@ test('AI evicts old users without clearing recently used histories', async () =>
   await ai.askAI('b', 'sin historial');
   assert.equal(payloads.at(-1).messages.length, 2);
 });
+
+
+test('provider fallback emits operational metadata without prompt or credentials', async () => {
+  const events = [];
+  const { createAI } = require('../src/aiClient');
+  const ai = createAI({ env: { GROQ_API_KEY: 'secret-key' }, wait: async () => {}, fetchImpl: async () => new Response('{}', { status: 401 }) });
+  await assert.rejects(ai.askAI('u', 'private question', { onProviderFailure: data => events.push(data) }));
+  assert.equal(events.length, 1); assert.equal(events[0].proveedor, 'Groq');
+  assert.doesNotMatch(JSON.stringify(events), /secret-key|private question/);
+});

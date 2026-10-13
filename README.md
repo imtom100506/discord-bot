@@ -47,11 +47,11 @@ intervenciones; preguntas con más de 15 segundos en espera caducan. Una transmi
 continua se divide en segmentos. La salida se serializa para evitar respuestas
 superpuestas. Salir libera decodificadores, VAD, temporizadores y sockets.
 
-Por defecto se descarta recepción durante la reproducción de TARS y los 200 ms
-siguientes para evitar eco acústico; las suscripciones permanecen abiertas.
-`TARS_ALLOW_BARGE_IN=true` permite recibir mientras habla: **no implementa cancelación
-de eco ni interrumpe automáticamente la respuesta**. Pruébalo con auriculares.
-Siempre se ignoran los paquetes del propio bot.
+Durante reproducción se sigue recibiendo para detectar órdenes locales de salida.
+Sin `TARS_ALLOW_BARGE_IN=true`, las demás intervenciones durante reproducción no
+llegan al modelo. No hay cancelación de eco acústico; se recomiendan auriculares.
+Siempre se ignoran los paquetes del propio bot. La transcripción existente conserva
+sus cuotas; las órdenes no consumen tokens del modelo conversacional.
 
 ## Las tres capas
 
@@ -136,21 +136,10 @@ leen en TTS.
 
 ## Privacidad y memoria
 
-Al entrar TARS dice **“Escuchando a todo el canal”** y publica aviso de STT externo y
-`/privacidad`. También avisa en el chat cuando entra un participante. `/privacidad
-accion` y `!privacidad accion` admiten:
-
-| Acción | Efecto |
-| --- | --- |
-| `estado` | Indica proveedor, escucha, exclusión, almacenamiento y logs |
-| `excluir` | Cancela captura/trabajos de tu voz y persiste exclusión del canal |
-| `incluir` | Retira tu exclusión y vuelve a suscribirse |
-| `borrar` | Borra tus recuerdos y purga contexto compartido derivado |
-
-Exclusión/inclusión requieren estar en el canal activo. Borrar no impide crear nuevos
-recuerdos: usa también excluir. `/reset` conserva su efecto sobre tu historial de
-texto y además borra memoria local de voz. El borrado funciona también sin sesión
-de voz. No elimina mensajes ya publicados en Discord ni datos enviados a proveedores.
+Al entrar TARS avisa que escucha a todo el canal y usa STT externo. También avisa a
+nuevos participantes. Las exclusiones ya persistidas siguen aplicándose.
+`/salir` detiene la recepción; `/reset` borra el historial de texto y la memoria
+local de voz, incluso sin sesión. No elimina registros enviados a terceros.
 
 `TARS_DATA_DIR/channelMemory.json` (por defecto `data/channelMemory.json`) guarda
 usuarios frecuentes, gustos expresados como “me gusta…”, temas con “recuerda el
@@ -164,8 +153,8 @@ confiable, nunca como instrucciones del sistema.
 En modo global los logs de conversación en Discord están desactivados por defecto.
 Con `TARS_VOICE_LOG_ENABLED=true`, las transcripciones aceptadas —incluida conversación
 de fondo— y respuestas van a `logs-tars`, con autor/canal/hora y menciones deshabilitadas.
-`/privacidad` muestra si están activos. Comandos y logs de texto conservan su
-funcionamiento anterior. Configura acceso y retención de esos registros.
+Los logs operativos no incluyen conversaciones, incluso con esa opción desactivada.
+Configura acceso y retención de los registros.
 
 ## Configuración y compatibilidad
 
@@ -203,7 +192,7 @@ aceptadas; la conversación de fondo no renueva el plazo.
 
 `TARS_GLOBAL_LISTENING=false` conserva módulo y pruebas anteriores: captura manual
 y detector acústico opcional `TARS_WAKE_ENABLED=true`, sin VAD global ni exclusiones
-por usuario. En ese modo `/privacidad` explica el comportamiento y remite a `/salir`.
+por usuario. `/salir` detiene la recepción.
 `TARS_WAKE_ENABLED` solo afecta al modo anterior.
 
 La moderación no cambia: `!borrar 10`, `!borrar @usuario 10` y `/borrar` aceptan 1–100;
@@ -245,3 +234,25 @@ Pruebas: hablantes simultáneos, bots, VAD/0.5 s, privacidad, cancelación, cont
 sin LLM, contexto aislado, persistencia, SSE fragmentado, texto parcial/final,
 presupuesto y compatibilidad anterior. Los tests SSE cubren el módulo histórico;
 la ruta gratuita actual espera el texto completo antes de reproducirlo.
+
+## Salida hablada, cuenta regresiva y logs operativos
+
+Di “TARS, salte”, “TARS, puedes irte” o “TARS, desconéctate”. Se aceptan cortesías,
+tildes y puntuación. Negaciones y menciones narrativas no ejecutan acciones.
+“TARS, autodestrucción” reproduce 5, 4, 3, 2, 1 y sale a los cinco segundos.
+Repetirla no reinicia el plazo; una salida normal lo interrumpe inmediatamente.
+El WAV pregenerado usa el perfil de voz de TARS: `npm run voice:pregenerate`.
+No se sintetiza durante la ejecución de la orden. Un fallo de audio no cancela la salida.
+El bot conserva el límite existente de una sesión de voz a la vez; eventos de
+otros servidores no la cierran. En modo manual, las órdenes usan la captura
+activada por /escuchar o Hey TARS; durante respuestas se habilita recepción de controles.
+
+`LOG_CHANNEL_ID` tiene prioridad para logs operativos. Sin él se busca el canal
+existente `logs-tars` del servidor del evento (caché y fetch). No se crean canales.
+Para eventos globales se requiere un destino inequívoco; configura el ID si hay varios.
+El bot necesita Ver canal y Enviar mensajes (Enviar mensajes en hilos si corresponde).
+La cola admite 100 registros, separa envíos por 1,1 s y reintenta como máximo dos
+veces ante 429/5xx. Discord.js gestiona sus límites REST. Un error de red ambiguo
+no se reenvía, para evitar duplicados. Los fallos dejan diagnóstico en consola.
+Los registros incluyen fecha UTC, evento, contexto disponible, resultado y error;
+se omiten mensajes, respuestas y secretos. Los mensajes de bots no ejecutan comandos.

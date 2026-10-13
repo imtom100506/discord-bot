@@ -1,6 +1,6 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
-const { askAI, clearHistory, setBudget } = require("./ai");
+const { askAI: rawAskAI, clearHistory, setBudget } = require("./ai");
 const keepAlive = require("./keepAlive");
 const { summaryCount, countFromText, mentionedUserId, splitResponse, appendContext } = require("./commandUtils");
 const { BoundedMap } = require("./boundedMap");
@@ -31,29 +31,14 @@ const voiceEnabled = process.env.TARS_VOICE_ENABLED === 'true';
 const budget = createUsageBudget({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
   global.fetch, 'TARS · Presupuesto IA · No borrar', 'tars-usage.json') : undefined });
 if (voiceEnabled) setBudget(budget);
-const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client) });
+const sendLog = require('./operationalLog').createOperationalLog(client);
+const askAI = (id, text, options = {}) => rawAskAI(id, text, { onProviderFailure: data => sendLog('ia_proveedor_error', { usuario_id: id, ...data }), ...options });
+const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client), sendLog });
 client.on('voiceStateUpdate', (oldState, newState) => voice.onVoiceState(oldState, newState));
 process.once('SIGTERM', () => { voice.leave(); client.destroy(); process.exit(0); });
 process.once('SIGINT', () => { voice.leave(); client.destroy(); process.exit(0); });
 
-async function sendLog(type, data) {
-  if (!process.env.LOG_CHANNEL_ID) return;
-  try {
-    const channel = await client.channels.fetch(process.env.LOG_CHANNEL_ID);
-    if (!channel?.isTextBased() || typeof channel.send !== "function") return;
-    const timestamp = new Date().toLocaleString("es-CL", { timeZone: "America/Santiago" });
-    const details = Object.entries(data).map(([key, value]) => `${key}: ${String(value).slice(0, 400)}`).join("\n");
-    await channel.send({ content: `[${timestamp}] **${type.toUpperCase()}**\n${details}`.slice(0, 1900), allowedMentions: { parse: [] } });
-  } catch (error) {
-    console.error("Error enviando log:", error.message);
-  }
-}
-
 const commands = [
-  new SlashCommandBuilder().setName('privacidad').setDescription('Consulta el uso de tu voz, exclúyete o borra tu memoria local')
-    .addStringOption(o => o.setName('accion').setDescription('Acción de privacidad').addChoices(
-      { name: 'Estado', value: 'estado' }, { name: 'Excluir mi voz', value: 'excluir' },
-      { name: 'Incluir mi voz', value: 'incluir' }, { name: 'Borrar mi memoria', value: 'borrar' })),
   ...['entrar', 'escuchar', 'salir'].map(name => new SlashCommandBuilder().setName(name)
     .setDescription({ entrar: 'Invita a TARS a tu canal de voz', escuchar: 'Activa una pregunta de voz de hasta 12 segundos', salir: 'Desconecta a TARS de tu canal de voz' }[name])),
   new SlashCommandBuilder().setName("tars").setDescription("Habla con TARS")
@@ -76,7 +61,7 @@ client.once("ready", async () => {
   void sendLog("conexion", { bot: client.user.tag, servidores: client.guilds.cache.size });
   const restoreMutes = async () => {
     try { await textMutes.sweep(client, sendLog); }
-    catch (error) { console.error("No se pudo recuperar el registro de mutes de texto:", error.message); }
+    catch (error) { void sendLog("mute_restauracion_error", { error: error.message }); }
   };
   await restoreMutes();
   for (const guild of client.guilds.cache.values()) {
@@ -93,7 +78,7 @@ client.once("ready", async () => {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
   } catch (error) {
-    console.error("Error registrando comandos:", error.message);
+    void sendLog("registro_comandos_error", { error: error.message });
   }
 });
 
@@ -151,10 +136,6 @@ async function disconnect(ctx, text) {
 }
 
 async function execute(ctx, command, argument) {
-  if (command === 'privacidad') {
-    if (process.env.TARS_GLOBAL_LISTENING === 'false') return ctx.reply('Modo anterior: captura manual o Hey TARS, STT Groq y logs-tars. Usa /salir para detener la recepción; /reset borra tu historial de IA.');
-    return voice.handle(ctx, command, argument);
-  }
   if (['entrar', 'escuchar', 'salir'].includes(command)) return voice.handle(ctx, command);
   if (command === "ping") return ctx.reply(`Pong! Latencia: **${client.ws.ping}ms**`);
   if (command === "ayuda") return ctx.reply(HELP);
@@ -203,9 +184,16 @@ async function execute(ctx, command, argument) {
   await ctx.reply(response);
 }
 
+async function runCommand(ctx, command, argument) {
+  return sendLog.withContext(ctx, async () => {
+    try { await execute(ctx, command, argument); void sendLog('comando', { comando: command, resultado: 'procesado' }); }
+    catch (error) { await handleError(ctx, error); }
+  });
+}
+
 async function handleError(ctx, error) {
   console.error("Error ejecutando comando:", error.message);
-  void sendLog("error", { usuario: ctx.user.username, error: error.cause?.message || error.message || String(error) });
+  void sendLog("error", { servidor_id: ctx.guild?.id, canal_id: ctx.channel?.id, usuario_id: ctx.user.id, usuario: ctx.user.username, resultado: "fallido", error: error.cause?.message || error.message || String(error) });
   if (error.code === 10062 || error.code === 10015) return;
   const response = error.code === 'AI_BUDGET' ? error.message : error.code === "AI_UNAVAILABLE"
     ? "Los proveedores de IA están saturados o alcanzaron su cuota gratuita. Prueba de nuevo más tarde."
@@ -220,7 +208,7 @@ async function handleError(ctx, error) {
 
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton?.() && interaction.customId?.startsWith('tars_followup:')) {
-    try { await voice.handleSuggestion?.(interaction); } catch (error) { console.warn('[voz:sugerencia]', error.code || 'error'); }
+    try { await voice.handleSuggestion?.(interaction); } catch (error) { void sendLog('voz_sugerencia_error', { servidor_id: interaction.guildId, canal_id: interaction.channelId, usuario_id: interaction.user.id, error: error.message }); }
     return;
   }
   if (!interaction.isChatInputCommand() || !interaction.isRepliable()) return;
@@ -237,14 +225,12 @@ client.on("interactionCreate", async interaction => {
     },
   };
   try {
-    await interaction.deferReply(["reset", "ayuda", "privacidad"].includes(interaction.commandName) ? { flags: 64 } : {});
-    void sendLog("slash", { usuario: ctx.user.username, comando: interaction.commandName, canal: ctx.channel?.name || "privado" });
+    await interaction.deferReply(["reset", "ayuda"].includes(interaction.commandName) ? { flags: 64 } : {});
     const argument = interaction.commandName === 'borrar' ? `${interaction.options.getUser('usuario') ? `<@${interaction.options.getUser('usuario').id}> ` : ''}${interaction.options.getInteger('cantidad')}` :
       interaction.commandName === "resumir" ? interaction.options.getInteger("cantidad") :
       interaction.commandName === "usuarios" ? interaction.options.getString("rol") :
-      interaction.commandName === "tars" ? interaction.options.getString("mensaje") :
-      interaction.commandName === 'privacidad' ? interaction.options.getString('accion') : null;
-    await execute(ctx, interaction.commandName, argument);
+      interaction.commandName === "tars" ? interaction.options.getString("mensaje") : null;
+    await runCommand(ctx, interaction.commandName, argument);
   } catch (error) { await handleError(ctx, error); }
 });
 
@@ -252,7 +238,7 @@ client.on("messageCreate", async message => {
   if (message.author.bot) return;
   const recent = channelContext.get(message.channel.id) || [];
   channelContext.set(message.channel.id, appendContext(recent, `${message.author.username}: ${message.content}`));
-  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir|borrar|privacidad)(?:\s+([\s\S]*))?$/i);
+  const match = message.content.trim().match(/^!(tars|reset|ping|ayuda|resumir|usuarios|entrar|escuchar|salir|borrar)(?:\s+([\s\S]*))?$/i);
   const ctx = {
     user: message.author, guild: message.guild, channel: message.channel, messageId: message.id,
     reply: async text => {
@@ -262,10 +248,10 @@ client.on("messageCreate", async message => {
     },
   };
   try {
-    if (await confirmDelete(ctx, message.content, { sendLog, clearContext: id => channelContext.delete(id) })) return;
+    if (await sendLog.withContext(ctx, () => confirmDelete(ctx, message.content, { sendLog, clearContext: id => channelContext.delete(id) }))) return;
     if (!match) return;
     if (["tars", "resumir", "usuarios"].includes(match[1].toLowerCase())) await message.channel.sendTyping();
-    await execute(ctx, match[1].toLowerCase(), match[2]);
+    await runCommand(ctx, match[1].toLowerCase(), match[2]);
   } catch (error) { await handleError(ctx, error); }
 });
 
@@ -278,6 +264,12 @@ client.on("error", error => {
   void sendLog("error_fatal", { error: error.message });
 });
 
+client.on('warn', warning => { void sendLog('discord_aviso', { detalle: warning }); });
+client.on('shardDisconnect', (event, shard) => { void sendLog('discord_desconexion', { shard, codigo: event.code }); });
+client.on('shardReconnecting', shard => { void sendLog('discord_reconexion', { shard }); });
+client.on('shardError', (error, shard) => { void sendLog('discord_error', { shard, error: error.message }); });
+client.on('guildCreate', guild => { void sendLog('servidor_entrada', { servidor_id: guild.id }); });
+client.on('guildDelete', guild => { void sendLog('servidor_salida', { servidor_id: guild.id }); });
 keepAlive();
 client.login(process.env.DISCORD_TOKEN).catch(error => {
   console.error("Error al conectar con Discord:", error.message);
