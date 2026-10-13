@@ -1,10 +1,11 @@
+const { voiceControl, startCountdown } = require('./voiceControl');
 const { Readable } = require('node:stream');
 const { startWakeListener } = require('./wakeListener');
 const IDLE_MS = 5 * 60 * 1000;
 const FOLLOWUP_MS = 8000;
 const MAX_AUDIO_BYTES = 12 * 32000;
 
-function createVoice({ client, askAI, audio, recordConversation = () => {}, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
+function createVoice({ client, askAI, audio, recordConversation = () => {}, sendLog = () => {}, enabled = false, api, decoderFactory, wakeFactory = null, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   let session, joining = false;
   const load = () => {
@@ -12,22 +13,35 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
     decoderFactory ||= require('./opusDecoder').createOpusDecoder;
   };
   const tell = (s, text) => s.channel.send({ content: text, allowedMentions: { parse: [] } }).catch(() => {});
-  function leave(s = session) {
+  const log = (s, event, data = {}) => sendLog(event, { servidor_id: s.voiceChannel.guild.id, canal_id: s.voiceChannel.id, ...data });
+  function control(s, text, userId, addressed = false) {
+    if (s.closed || !s.voiceChannel.members.has(userId) || s.voiceChannel.members.get(userId).user.bot) return false;
+    const intent = voiceControl(text) || (addressed ? voiceControl('TARS ' + text) : null);
+    if (!intent) return false;
+    s.controlUser = userId;
+    if (intent === 'leave') leave(s, 'solicitud_por_voz');
+    else startCountdown(s, { audio, api, leave, setTimer, clearTimer,
+      log: (event, data) => log(s, event, { usuario_id: userId, ...data }),
+      cancel: () => { s.workAbort?.abort(); s.player.stop(true); s.resource?.playStream.destroy(); s.resource = undefined; } });
+    return true;
+  }
+  function leave(s = session, reason = 'salida') {
     if (!s || s.closed) return;
     s.closed = true;
-    s.wake?.stop();
+    s.wake?.stop(); s.priority?.stop(); clearTimer(s.countdownTimer); s.workAbort?.abort();
     wakeFactory?.dispose?.();
     clearTimer(s.idleTimer); clearTimer(s.captureTimer);
     s.abort.abort(); s.cancelCapture?.();
     audio.close?.();
     s.player.stop(true); s.resource?.playStream.destroy();
-    s.connection.destroy();
+    s.subscription?.unsubscribe(); s.connection.destroy(); s.connection.removeAllListeners('stateChange');
+    if (s.controlUser) log(s, 'voz_desconexion', { usuario_id: s.controlUser, motivo: reason, resultado: 'desconectado' });
     if (session === s) session = undefined;
   }
   function schedule(s) {
     clearTimer(s.idleTimer);
     s.idleTimer = setTimer(() => {
-      if (s.closed) return;
+      if (s.closed || s.countdown) return;
       if (now() - s.lastCall < IDLE_MS) return schedule(s);
       void tell(s, 'Me retiro: pasaron 5 minutos sin llamados. Usa /entrar para invitarme otra vez.');
       leave(s);
@@ -56,7 +70,7 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
         s = { connection, player: api.createAudioPlayer(), channel: ctx.channel, voiceChannel: channel,
           lastCall: now(), followupUntil: 0, abort: new AbortController(), closed: false, busy: false };
         session = s;
-        s.player.on('error', () => { void tell(s, 'Falló la reproducción de voz. Me desconecto; puedes usar /entrar para reintentar.'); leave(s); });
+        s.player.on('error', error => { if (s.countdown) { log(s, 'voz_audio_error', { error: error.message }); return; } void tell(s, 'Falló la reproducción de voz. Me desconecto; puedes usar /entrar para reintentar.'); leave(s); });
         connection.on('error', () => leave(s));
         connection.on('stateChange', (_, state) => {
           if (state.status === api.VoiceConnectionStatus.Disconnected) leave(s);
@@ -75,7 +89,7 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
             s.wake = startWakeListener({ receiver: connection.receiver, api, decoderFactory,
               detectorFactory: wakeFactory, setTimer, clearTimer, now,
               followupEligible: id => id === s.followupUser && now() < s.followupUntil,
-              eligible: id => !s.closed && !s.busy && now() >= (s.blockedUntil || 0) &&
+              eligible: id => !s.closed && !s.countdown && !s.busy && now() >= (s.blockedUntil || 0) &&
                 s.voiceChannel.members.has(id) && !s.voiceChannel.members.get(id).user.bot,
               onWake: (id, source) => { void respond(s, id, source); },
               onError: event => {
@@ -87,7 +101,9 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
           }
           timings.detector_ms = now() - detectorStarted;
         }
-        connection.subscribe(s.player); schedule(s);
+        s.priority = require('./priorityReceiver').priorityReceiver({ s, api, decoderFactory, audio, setTimer, clearTimer, client,
+          onText: (text, id) => control(s, text, id), onError: error => console.warn('[voz:control]', error.code || error.name) });
+        s.subscription = connection.subscribe(s.player); schedule(s);
         void audio.warm?.();
         if (s.wake) return await ctx.reply('En línea. Di "Hey TARS" y tu consulta. Sesión activa mientras conversemos; se cerrará tras 5 minutos de inactividad.');
         return await ctx.reply('En línea. Usa /escuchar y habla. Me retiraré tras 5 minutos de inactividad.');
@@ -97,6 +113,7 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
     const s = session;
     if (!s || s.voiceChannel.id !== channel.id) return ctx.reply('Debes estar en mi canal. Usa /entrar si todavía no estoy conectado.');
     if (command === 'salir') { leave(s); return ctx.reply('Desconectado del canal de voz.'); }
+    if (s.countdown) return ctx.reply('Cuenta regresiva en curso. /salir desconecta inmediatamente.');
     if (s.busy) return ctx.reply('Espera a que termine de responder.');
     if (now() < (s.blockedUntil || 0)) return ctx.reply(s.pauseMessage);
     return respond(s, ctx.user.id, undefined, ctx);
@@ -108,7 +125,8 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
     const followup = !source && !ctx;
     // Reutilizar la recepción existente: destroy() no la retira de Discord hasta «close».
     source ||= s.wake?.take(userId);
-    s.busy = true;
+    s.busy = true; s.capturing = true; s.workAbort = new AbortController();
+    const signal = AbortSignal.any([s.abort.signal, s.workAbort.signal]);
     s.wake?.pause();
     const previousWindow = s.followupUntil;
     if (!followup) { s.lastCall = now(); schedule(s); }
@@ -119,7 +137,7 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
       const captured = capture(s, userId, source);
       if (ctx) await ctx.reply('Te escucho. Haz una pregunta breve y luego guarda silencio.');
       const pcm = await captured;
-      mark('captura_ms');
+      mark('captura_ms'); s.capturing = false;
       if (s.closed) return;
       const question = await audio.transcribe(pcm, s.abort.signal);
       mark('transcripcion_ms');
@@ -129,21 +147,27 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
         if (ctx) await tell(s, 'No te oí bien. ¿Puedes repetirlo?');
         return;
       }
+      if (control(s, question, userId, !!source || !!ctx)) return;
+      signal.throwIfAborted();
       if (followup) { s.lastCall = now(); schedule(s); }
       recordConversation({ guildId: s.voiceChannel.guild.id, channelId: s.voiceChannel.id, userId, role: 'user', text: question });
-      const reply = await askAI(userId, question, { voice: true, signal: s.abort.signal });
+      const reply = await askAI(userId, question, { voice: true, signal });
+      signal.throwIfAborted();
       mark('respuesta_ms');
       if (s.closed) return;
-      const wav = await audio.synthesize(reply, s.abort.signal);
+      const wav = await audio.synthesize(reply, signal);
+      signal.throwIfAborted();
       mark('sintesis_ms');
       if (s.closed) return;
       s.resource = api.createAudioResource(Readable.from([wav]), { inputType: api.StreamType.Arbitrary });
       s.player.play(s.resource);
-      await api.entersState(s.player, api.AudioPlayerStatus.Playing, 10000);
-      await api.entersState(s.player, api.AudioPlayerStatus.Idle, 45000);
+      await api.entersState(s.player, api.AudioPlayerStatus.Playing, AbortSignal.any([signal, AbortSignal.timeout(10000)]));
+      await api.entersState(s.player, api.AudioPlayerStatus.Idle, AbortSignal.any([signal, AbortSignal.timeout(45000)]));
+      signal.throwIfAborted();
       if (!s.closed) recordConversation({ guildId: s.voiceChannel.guild.id, channelId: s.voiceChannel.id, userId, role: 'assistant', text: reply });
       answered = true;
     } catch (error) {
+      if (signal.aborted) return;
       console.warn('[voz:error]', JSON.stringify({ stage: timings.respuesta_ms !== undefined ? 'synthesis_or_playback' : timings.transcripcion_ms !== undefined ? 'response' : 'capture_or_transcription', name: error.name, code: error.code, signal: error.signal }));
       if (error.code === 'AI_BUDGET') {
         s.blockedUntil = now() + (error.retryAfterMs || 30000);
@@ -153,9 +177,10 @@ function createVoice({ client, askAI, audio, recordConversation = () => {}, enab
       if (!s.closed) await tell(s, error.code === 'AI_BUDGET' ? error.message : 'No pude completar la respuesta de voz. No reintentaré automáticamente.');
     } finally {
       console.info('[voz:tiempos]', JSON.stringify({ ...timings, total_ms: now() - started }));
-      s.cancelCapture?.(); s.resource?.playStream.destroy(); s.resource = undefined;
-      s.player.stop(true); s.busy = false;
-      if (!s.closed && now() - s.lastCall >= IDLE_MS) leave(s);
+      s.cancelCapture?.(); s.capturing = false;
+      if (!s.countdown) { s.resource?.playStream.destroy(); s.resource = undefined; s.player.stop(true); }
+      s.busy = false;
+      if (!s.closed && !s.countdown && now() - s.lastCall >= IDLE_MS) leave(s);
       if (!s.closed && answered) { s.followupUser = userId; s.followupUntil = now() + FOLLOWUP_MS; }
       // Un ruido o silencio no consume ni prolonga la ventana de continuación.
       if (!s.closed && empty && followup) s.followupUntil = previousWindow;

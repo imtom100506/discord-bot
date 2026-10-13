@@ -28,10 +28,11 @@ const muteStateChannel = process.env.TARS_STATE_CHANNEL_ID || process.env.LOG_CH
 const textMutes = createTextMutes({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel) : undefined });
 const channelContext = new BoundedMap(200);
 const voiceEnabled = process.env.TARS_VOICE_ENABLED === 'true';
-const budget = createUsageBudget({ store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
+const rate = (key, fallback) => { const value = Number(process.env[key]); return Number.isInteger(value) && value > 0 && value <= 60 ? value : fallback; };
+const budget = createUsageBudget({ minuteRequests: rate('TARS_LLM_REQUESTS_PER_MINUTE', 6), sttMinuteRequests: rate('TARS_STT_REQUESTS_PER_MINUTE', 20), store: muteStateChannel ? createDiscordMuteStore(client, muteStateChannel,
   global.fetch, 'TARS · Presupuesto IA · No borrar', 'tars-usage.json') : undefined });
 if (voiceEnabled) setBudget(budget);
-const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client) });
+const voice = createVoice({ client, askAI, enabled: voiceEnabled, audio: createVoiceAudio({ budget }), wakeFactory: createWakeFactory(), recordConversation: createVoiceLog(client), sendLog });
 client.on('voiceStateUpdate', (oldState, newState) => voice.onVoiceState(oldState, newState));
 process.once('SIGTERM', () => { voice.leave(); client.destroy(); process.exit(0); });
 process.once('SIGINT', () => { voice.leave(); client.destroy(); process.exit(0); });

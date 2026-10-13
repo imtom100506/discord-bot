@@ -1,8 +1,10 @@
 // Se persiste antes de llamar al proveedor. Ventanas móviles, sin reinicios de cuota.
 function createUsageBudget({ store, now = Date.now, dailyRequests = 500, dailyTokens = 100000,
-  dailyAudio = 3600, minuteRequests = 6 } = {}) {
+  dailyAudio = 3600, minuteRequests = 6, sttMinuteRequests = minuteRequests } = {}) {
   let entries, queue = Promise.resolve();
   function reserve({ tokens = 0, audio = 0 } = {}) {
+    const scope = audio > 0 ? 'stt' : 'llm';
+    const queuedAt = now();
     const task = queue.then(async () => {
       if (!store) throw new Error('Falta almacenamiento de cuota');
       if (!Number.isFinite(tokens) || !Number.isFinite(audio) || tokens < 0 || audio < 0) throw new Error('Reserva inválida');
@@ -20,7 +22,7 @@ function createUsageBudget({ store, now = Date.now, dailyRequests = 500, dailyTo
         ['tokens_day', entries, e => e.tokens, tokens, dailyTokens, 86400000],
         ['audio_day', entries, e => e.audio, audio, dailyAudio, 86400000],
         // Compatible con registros anteriores: audio > 0 identifica transcripción.
-        ['requests_minute', minute.filter(e => (e.audio > 0) === (audio > 0)), () => 1, 1, minuteRequests, 60000],
+        ['requests_minute', minute.filter(e => (e.audio > 0) === (audio > 0)), () => 1, 1, scope === 'stt' ? sttMinuteRequests : minuteRequests, 60000],
       ];
       let blocked;
       for (const [reason, records, weight, requested, limit, window] of limits) {
@@ -35,17 +37,18 @@ function createUsageBudget({ store, now = Date.now, dailyRequests = 500, dailyTo
         if (!blocked || retryAfterMs > blocked.retryAfterMs) blocked = { reason, retryAfterMs, used, requested, limit };
       }
       if (blocked) {
-        console.info('[IA:limite]', JSON.stringify({ ...blocked, retryAt: new Date(time + blocked.retryAfterMs).toISOString() }));
+        console.info('[IA:limite]', JSON.stringify({ ...blocked, scope, retryAt: new Date(time + blocked.retryAfterMs).toISOString() }));
         const minutes = Math.ceil(blocked.retryAfterMs / 60000);
         const message = blocked.retryAfterMs <= 60000
-          ? 'Dame un momento; podremos seguir en menos de un minuto.'
+          ? `Alcancé el límite local de ${scope === 'stt' ? 'transcripciones' : 'respuestas de IA'}. Podré ${scope === 'stt' ? 'escuchar' : 'responder'} de nuevo en ${Math.ceil(blocked.retryAfterMs / 1000)} segundos.`
           : `Necesito una pausa. Prueba de nuevo en unos ${minutes} minutos.`;
-        throw Object.assign(new Error(message), { code: 'AI_BUDGET', ...blocked });
+        throw Object.assign(new Error(message), { code: 'AI_BUDGET', scope, ...blocked });
       }
       const entry = { time, tokens, audio };
       const next = [...entries, entry];
       await store.write(JSON.stringify(next));
       entries = next;
+      if (now() - queuedAt > 1000) console.info('[IA:cuota_espera]', JSON.stringify({ scope, almacenamiento_y_cola_ms: now() - queuedAt }));
       let settled = false;
       return { settle(actualTokens) {
         if (!Number.isSafeInteger(actualTokens) || actualTokens <= 0 || !tokens) return Promise.resolve();
@@ -65,7 +68,7 @@ function createUsageBudget({ store, now = Date.now, dailyRequests = 500, dailyTo
     });
     const safe = task.catch(error => {
       if (error.code === 'AI_BUDGET') throw error;
-      throw Object.assign(new Error('No puedo responder ahora. Inténtalo en un momento.'), { code: 'AI_BUDGET', reason: 'storage', retryAfterMs: 30000 });
+      throw Object.assign(new Error('No puedo responder ahora. Inténtalo en un momento.'), { code: 'AI_BUDGET', reason: 'storage', scope, retryAfterMs: 30000 });
     });
     queue = safe.catch(() => {});
     return safe;

@@ -77,7 +77,7 @@ test('leaving during neural speech generation prevents fallback', async () => {
 
 function fixture(overrides = {}) {
   let time = 0, destroyed = 0, subscriptions = 0, transcriptions = 0, capture;
-  const timers = new Set(), replies = [];
+  const timers = new Set(), replies = [], logs = [], plays = [];
   const connection = new EventEmitter();
   connection.destroy = () => { destroyed++; };
   connection.subscribe = () => {};
@@ -91,7 +91,7 @@ function fixture(overrides = {}) {
     return input;
   } };
   connection.receiver.speaking = new EventEmitter();
-  const player = new EventEmitter(); player.stop = () => {}; player.play = () => {};
+  const player = new EventEmitter(); player.stop = () => {}; player.play = resource => plays.push(resource);
   const api = { joinVoiceChannel: () => connection, createAudioPlayer: () => player,
     createAudioResource: () => ({ playStream: new PassThrough() }), StreamType: { Arbitrary: 'arbitrary' },
     entersState: overrides.entersState || (async () => {}), VoiceConnectionStatus: { Ready: 'ready', Disconnected: 'disconnected' },
@@ -101,9 +101,9 @@ function fixture(overrides = {}) {
   const ctx = { guild, user: { id: 'human' }, channel: { send: async value => replies.push(value.content) }, reply: async value => replies.push(value) };
   const voice = createVoice({ enabled: true, client: { user: { id: 'bot' } }, api,
     wakeFactory: overrides.wakeFactory,
-    recordConversation: overrides.recordConversation,
+    recordConversation: overrides.recordConversation, sendLog: (event, data) => logs.push({event, ...data}),
     askAI: overrides.askAI || (async () => { throw Error('not expected'); }), decoderFactory: () => new PassThrough(),
-    audio: { check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
+    audio: { countdown: overrides.countdown || (async () => Buffer.from('countdown')), check: overrides.check || (async () => {}), synthesize: async () => Buffer.from('wav'), transcribe: overrides.transcribe || (async pcm => { transcriptions++; assert.ok(pcm.length <= MAX_AUDIO_BYTES); return ''; }) },
     now: () => time, setTimer: (fn, delay) => { const timer = { fn, deadline: time + delay }; timers.add(timer); return timer; },
     clearTimer: timer => timers.delete(timer) });
   async function advance(ms) {
@@ -111,7 +111,7 @@ function fixture(overrides = {}) {
     for (const t of [...timers]) if (t.deadline <= time) { timers.delete(t); t.fn(); }
     await new Promise(resolve => setImmediate(resolve));
   }
-  return { voice, ctx, advance, replies, receiver: connection.receiver, get capture() { return capture; }, get destroyed() { return destroyed; },
+  return { voice, ctx, advance, replies, logs, plays, player, timers, receiver: connection.receiver, get capture() { return capture; }, get destroyed() { return destroyed; },
     get subscriptions() { return subscriptions; }, get transcriptions() { return transcriptions; } };
 }
 
@@ -344,4 +344,89 @@ test('conversation log reuses existing text even when answering is blocked', asy
   }
   assert.deepEqual(records.map(item => [item.role, item.text]), [['user', 'Hola'], ['assistant', 'En línea.'], ['user', 'Hola']]);
   assert.equal(calls, 2); f.voice.leave();
+});
+
+test('manual legacy spoken exit and countdown never invoke conversational model', async () => {
+  for (const text of ['TARS salte', 'TARS autodestrucción']) {
+    let calls = 0;
+    const f = fixture({ transcribe: async () => text, askAI: async () => { calls++; return 'Unexpected'; } });
+    await f.voice.handle(f.ctx, 'entrar');
+    const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+    f.capture.end(Buffer.alloc(16000)); await pending;
+    if (text.includes('autodestrucción')) {
+      assert.equal(f.destroyed, 0); await f.advance(4999); assert.equal(f.destroyed, 0); await f.advance(1);
+    }
+    assert.equal(f.destroyed, 1); assert.equal(calls, 0);
+    assert.equal(f.receiver.speaking.listenerCount('start'), 0);
+  }
+});
+
+test('legacy receives priority exit during an outstanding model answer', async () => {
+  let text = 'TARS explica Marte', signal, release, calls = 0;
+  const f = fixture({ transcribe: async () => text, askAI: async (id, question, options) => {
+    calls++; signal = options.signal; await new Promise(resolve => { release = resolve; }); return 'Late';
+  } });
+  await f.voice.handle(f.ctx, 'entrar');
+  const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  text = 'TARS salte'; f.receiver.speaking.emit('start', 'human');
+  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  assert.equal(f.destroyed, 1); assert.equal(signal.aborted, true);
+  release(); await pending; assert.equal(calls, 1);
+  assert.equal(f.receiver.speaking.listenerCount('start'), 0);
+});
+
+
+test('countdown repetition and audio errors preserve deadline; exit interrupts it', async () => {
+  for (const immediate of [false, true]) {
+    let text = 'TARS autodestrucción', reads = 0;
+    const f = fixture({ transcribe: async () => text, countdown: async () => { reads++; throw Error('audio unavailable'); } });
+    await f.voice.handle(f.ctx, 'entrar');
+    const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+    f.capture.end(Buffer.alloc(16000)); await pending; await f.advance(1000);
+    f.player.emit('error', Error('playback failed'));
+    f.receiver.speaking.emit('start', 'outsider'); assert.equal(f.subscriptions, 1);
+    f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+    assert.equal(reads, 1); assert.equal(f.destroyed, 0);
+    f.voice.onVoiceState({ guild: { id: 'another' } }, { id: 'bot', channelId: null });
+    assert.equal(f.destroyed, 0);
+    if (immediate) {
+      text = 'TARS salte'; f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+    } else { await f.advance(3999); assert.equal(f.destroyed, 0); await f.advance(1); }
+    assert.equal(f.destroyed, 1); assert.equal(f.timers.size, 0);
+    assert.equal(f.logs.filter(x => x.event === 'voz_autodestruccion_inicio').length, 1);
+    assert.equal(f.logs.filter(x => x.event === 'voz_desconexion').length, 1);
+  }
+});
+
+test('priority exit cancels active playback and never sends the command to AI', async () => {
+  let text = 'TARS explica Marte', calls = 0;
+  const f = fixture({ transcribe: async () => text, askAI: async () => { calls++; return 'Respuesta'; },
+    entersState: async (target, state, signal) => {
+      if (state === 'idle') await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    } });
+  await f.voice.handle(f.ctx, 'entrar');
+  const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  assert.equal(f.plays.length, 1);
+  text = 'TARS desconéctate'; f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  await pending;
+  assert.equal(f.destroyed, 1); assert.equal(calls, 1); assert.equal(f.receiver.speaking.listenerCount('start'), 0);
+});
+
+
+test('cancelling an active reply does not destroy the countdown audio', async () => {
+  let text = 'TARS explica Marte';
+  const f = fixture({ transcribe: async () => text, askAI: async () => 'Respuesta',
+    entersState: async (target, state, signal) => {
+      if (state === 'idle') await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    } });
+  await f.voice.handle(f.ctx, 'entrar');
+  const pending = f.voice.handle(f.ctx, 'escuchar'); await f.advance(0);
+  f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  text = 'TARS autodestrucción'; f.receiver.speaking.emit('start', 'human'); f.capture.end(Buffer.alloc(16000)); await f.advance(0);
+  await pending;
+  assert.equal(f.plays.length, 2); assert.equal(f.plays[0].playStream.destroyed, true);
+  assert.equal(f.plays[1].playStream.destroyed, false);
+  await f.advance(5000); assert.equal(f.destroyed, 1); assert.equal(f.plays[1].playStream.destroyed, true);
 });

@@ -23,6 +23,15 @@ test('voice uses compact prompt and generation budget without retry storms', asy
   assert.ok(requests[0].messages[0].content.length < 400);
 });
 
+test('voice preserves full generated explanation and asks to retain user language', async () => {
+  const reply = 'Explanation with all details. '.repeat(25) + 'Final answer.';
+  let prompt;
+  const ai = make(async (url, init) => { prompt = JSON.parse(init.body).messages[0].content; return ok(reply); });
+  assert.equal(await ai.askAI('u', 'Explain step by step', { voice: true, detailed: true }), reply);
+  assert.match(prompt, /Conserva el idioma/);
+  assert.match(prompt, /1500/);
+});
+
 test('provider usage settles the reservation before delivering a response', async () => {
   const usage = [];
   const ai = make(async () => new Response(JSON.stringify({ usage: { total_tokens: 150 }, choices: [{ message: { content: 'Hola.' }, finish_reason: 'stop' }] })));
@@ -177,4 +186,14 @@ test('AI evicts old users without clearing recently used histories', async () =>
   assert.equal(payloads.at(-1).messages[1].content, 'primero');
   await ai.askAI('b', 'sin historial');
   assert.equal(payloads.at(-1).messages.length, 2);
+});
+
+
+test('provider fallback emits operational metadata without prompt or credentials', async () => {
+  const events = [];
+  const { createAI } = require('../src/aiClient');
+  const ai = createAI({ env: { GROQ_API_KEY: 'secret-key' }, wait: async () => {}, fetchImpl: async () => new Response('{}', { status: 401 }) });
+  await assert.rejects(ai.askAI('u', 'private question', { onProviderFailure: data => events.push(data) }));
+  assert.equal(events.length, 1); assert.equal(events[0].proveedor, 'Groq');
+  assert.doesNotMatch(JSON.stringify(events), /secret-key|private question/);
 });

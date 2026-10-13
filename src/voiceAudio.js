@@ -111,6 +111,11 @@ function createVoiceAudio({ env = process.env, budget, fetchImpl = global.fetch,
     });
     return stdout;
   }
-  return { check, transcribe, synthesize, warm, close };
+  let countdownBytes;
+  async function countdown() {
+    countdownBytes ||= require('node:fs/promises').readFile(require('node:path').join(__dirname, '../audio/countdown-davefx.wav'));
+    return countdownBytes;
+  }
+  return { check, transcribe, synthesize, countdown, warm, close };
 }
 module.exports = { wav, hasSpeech, trimSpeech, createVoiceAudio };

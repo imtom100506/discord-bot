@@ -35,7 +35,8 @@ o acentos; `/escuchar` permite invocarlo manualmente.
 
 Con voz habilitada, el registro privado de Discord conserva los límites internos:
 500 intentos de API, 100.000 tokens estimados y 3.600 segundos de audio por 24 horas
-móviles. Se permiten 6 transcripciones y 6 respuestas por minuto, separadamente.
+móviles. Se permiten 20 transcripciones y 6 respuestas por minuto, separadamente;
+configurables con TARS_STT_REQUESTS_PER_MINUTE y TARS_LLM_REQUESTS_PER_MINUTE.
 Cada intento se guarda antes de llamar al proveedor; los fallos también cuentan.
 Cuando el proveedor informa `usage.total_tokens`, la reserva de tokens se ajusta
 al consumo real. Sin ese dato se conserva la estimación. Los registros antiguos
@@ -75,3 +76,24 @@ Las comprobaciones de programas se ejecutan en paralelo y se reutilizan durante 
 despliegue; se solapan con la conexión. El saludo solo se envía cuando TARS está listo.
 
 Referencia de límites: https://console.groq.com/docs/rate-limits
+
+## Restauración selectiva
+
+La recepción, síntesis y registros de voz, junto al emisor de logs de Discord,
+usarán la implementación del 10/10/2026 (996b3d0). Los comandos escritos, borrado
+con confirmación, permisos y moderación se conservan. Se mantienen las mejoras
+compartidas de IA posteriores: colas independientes para texto y voz, cancelación
+de esperas, procesamiento SSE y presupuestos configurables con recuperación precisa.
+No se activa la escucha global, la voz Ald ni el nuevo formato de logs.
+
+### Dos órdenes locales de voz
+
+Se reincorporan salida ("TARS, salte del canal", "TARS, desconéctate") y
+autodestrucción de broma ("TARS, autodestrucción"). Se conserva la activación
+manual /escuchar o Hey TARS; durante respuestas y cuenta regresiva se reciben
+órdenes prioritarias del mismo canal. No se activa escucha global en reposo.
+La cuenta reproduce 5, 4, 3, 2, 1 con un WAV de cinco segundos generado con la voz
+Davefx y ajustes existentes. No sintetiza ni consulta al modelo al ejecutarla.
+Repetir la orden no reinicia el plazo; una salida normal desconecta inmediatamente.
+Las negaciones no activan estas órdenes. El audio fallido no cancela la salida.
+Se registran inicio y desconexión usando el emisor y formato de logs existentes.

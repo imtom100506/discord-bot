@@ -5,6 +5,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
+COPY audio ./audio
 COPY models ./models
 COPY scripts ./scripts
 RUN node scripts/download-models.js
